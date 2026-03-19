@@ -38,7 +38,7 @@ def _error(code: str, message: str, details: dict = None):
 
 
 def _output(result: dict):
-    json.dump(result, sys.stdout, separators=(",", ":"), default=str)
+    json.dump(result, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
     sys.exit(0 if result.get("success") else 1)
 
@@ -56,20 +56,8 @@ def _infer_error_code(message: str) -> str:
         return "EMAIL_NOT_FOUND"
     if "invalid" in msg and "id" in msg:
         return "INVALID_ID"
-    if "timed out" in msg or ("timeout" in msg and "re-list" not in msg):
+    if "timed out" in msg or "timeout" in msg:
         return "JXA_TIMEOUT"
-    if "could not be resolved" in msg:
-        return "EMAIL_NOT_FOUND"
-    if "flagged" in msg or "starred" in msg:
-        return "FLAGGED_PROTECTION"
-    if "safety cap" in msg or "exceeds" in msg:
-        return "BATCH_CAP_EXCEEDED"
-    if "permission" in msg or "full disk access" in msg:
-        return "PERMISSION_DENIED"
-    if "rewrite failed" in msg or "malformed .emlx" in msg:
-        return "EMLX_REWRITE_FAILED"
-    if "could not be quit" in msg:
-        return "MAIL_QUIT_FAILED"
     return "OPERATION_FAILED"
 
 
@@ -78,27 +66,60 @@ def _output_op(result: dict, command: str, t0):
 
     Detects inner success=False and converts to a proper error response so the
     CLI response contract is consistent (failures always in 'error', exit code 1).
-    Preserves structured data (flagged_ids, not_found, etc.) in error details.
-    Promotes inner 'warnings' to the top-level envelope field.
     """
-    # Extract warnings before branching so they land at the top-level envelope
-    inner_warnings = []
-    if isinstance(result, dict):
-        inner_warnings = result.pop("warnings", [])
-
     if isinstance(result, dict) and result.get("success") is False:
         msg = result.get("message") or result.get("error") or "operation failed"
         code = _infer_error_code(str(msg))
-        # Preserve structured fields in details for agent consumption
-        details = {k: v for k, v in result.items() if k not in ("success", "message", "error")}
         _output(_wrap(
-            error=_error(code, str(msg), details=details),
-            warnings=inner_warnings,
+            error=_error(code, str(msg)),
             command=command,
             start_time=t0,
         ))
     else:
-        _output(_wrap(data=result, warnings=inner_warnings, command=command, start_time=t0))
+        _output(_wrap(data=result, command=command, start_time=t0))
+
+
+# ------------------------------------------------------------------
+# ID resolution helpers
+# ------------------------------------------------------------------
+
+
+def _resolve_id_or_message_id(args, command: str, t0) -> tuple:
+    """Return (identifier, by_message_id) from --id/--message-id args.
+
+    Emits an error response and returns (None, False) when neither is provided.
+    """
+    mid = getattr(args, "message_id", None)
+    iid = getattr(args, "id", None)
+    if mid:
+        return mid, True
+    if iid:
+        return iid, False
+    _output(_wrap(
+        error=_error("MISSING_ID", "provide either --id or --message-id"),
+        command=command,
+        start_time=t0,
+    ))
+    return None, False
+
+
+def _resolve_ids_or_message_ids(args, command: str, t0) -> tuple:
+    """Return (identifiers_list, by_message_id) from --ids/--message-ids args.
+
+    Emits an error response and returns (None, False) when neither is provided.
+    """
+    mids = getattr(args, "message_ids", None)
+    iids = getattr(args, "ids", None)
+    if mids:
+        return mids, True
+    if iids:
+        return iids, False
+    _output(_wrap(
+        error=_error("MISSING_ID", "provide either --ids or --message-ids"),
+        command=command,
+        start_time=t0,
+    ))
+    return None, False
 
 
 # ------------------------------------------------------------------
@@ -112,7 +133,7 @@ def cmd_server_info(args, t0):
             "name": "apple-mail-skill",
             "version": VERSION,
             "description": "cursor skill for apple mail on macos",
-            "total_commands": 23,
+            "total_commands": 20,
         },
         command="server-info",
         start_time=t0,
@@ -172,7 +193,11 @@ def cmd_list_drafts(args, t0):
 def cmd_read_email(args, t0):
     from lib.ops.read import read_full_email
 
-    result = read_full_email(args.id)
+    identifier, by_mid = _resolve_id_or_message_id(args, "read-email", t0)
+    if identifier is None:
+        return
+
+    result = read_full_email(identifier, by_message_id=by_mid)
     if isinstance(result, dict) and result.get("success") is False:
         mail_sh = str(Path(__file__).resolve().parent / "mail.sh")
         msg = result.get("message", "email not found")
@@ -259,13 +284,18 @@ def cmd_send_draft(args, t0):
 def cmd_reply_draft(args, t0):
     from lib.ops.drafts import reply_draft
 
+    identifier, by_mid = _resolve_id_or_message_id(args, "reply-draft", t0)
+    if identifier is None:
+        return
+
     result = reply_draft(
-        original_email_id=args.id,
+        original_email_id=identifier,
         body=args.body,
         reply_all=args.reply_all,
         extra_cc=args.cc,
         extra_bcc=args.bcc,
         extra_attachments=args.attachments,
+        by_message_id=by_mid,
     )
     _output_op(result, "reply-draft", t0)
 
@@ -273,36 +303,34 @@ def cmd_reply_draft(args, t0):
 def cmd_forward_draft(args, t0):
     from lib.ops.forward import make_forward_draft
 
+    identifier, by_mid = _resolve_id_or_message_id(args, "forward-draft", t0)
+    if identifier is None:
+        return
+
     result = make_forward_draft(
-        email_id=args.id,
+        email_id=identifier,
         account=args.account,
         body=args.body,
         to=args.to,
         cc=args.cc,
         bcc=args.bcc,
         new_attachments=args.attachments,
+        by_message_id=by_mid,
     )
     _output_op(result, "forward-draft", t0)
 
 
 def cmd_delete_email(args, t0):
-    from lib.ops.delete import delete_emails_batch
+    from lib.ops.delete import delete_email, delete_emails_batch
 
-    # Always use batch path — it resolves RFC Message-IDs for Exchange resilience.
-    # Single-ID calls still work fine through the batch path.
-    result = delete_emails_batch(
-        args.ids,
-        dry_run=getattr(args, "dry_run", False),
-        force=getattr(args, "force", False),
-    )
+    identifiers, by_mid = _resolve_ids_or_message_ids(args, "delete-email", t0)
+    if identifiers is None:
+        return
 
-    # Add recovery hint when IDs weren't found (likely Exchange ID shift)
-    if isinstance(result, dict) and result.get("not_found"):
-        mail_sh = str(Path(__file__).resolve().parent / "mail.sh")
-        result.setdefault("recovery",
-            f"some IDs were not found — they may have shifted after an Exchange sync. "
-            f"Re-list for current IDs: {mail_sh} list-recent")
-
+    if len(identifiers) == 1:
+        result = delete_email(identifiers[0], by_message_id=by_mid)
+    else:
+        result = delete_emails_batch(identifiers, by_message_id=by_mid)
     _output_op(result, "delete-email", t0)
 
 
@@ -313,50 +341,15 @@ def cmd_delete_draft(args, t0):
     _output_op(result, "delete-draft", t0)
 
 
-def cmd_amend_subject(args, t0):
-    from lib.ops.amend import amend_subject
-
-    result = amend_subject(args.id, args.subject, dry_run=getattr(args, "dry_run", False))
-
-    # Add recovery hint for not-found errors (matching read-email pattern)
-    if isinstance(result, dict) and result.get("success") is False:
-        msg = result.get("message", "")
-        if "not found" in msg.lower():
-            mail_sh = str(Path(__file__).resolve().parent / "mail.sh")
-            result.setdefault("recovery",
-                f"IDs may have shifted — re-list for current IDs: {mail_sh} list-recent")
-
-    _output_op(result, "amend-subject", t0)
-
-
-def cmd_add_label(args, t0):
-    from lib.ops.amend import add_label
-
-    result = add_label(args.id, args.label, dry_run=getattr(args, "dry_run", False))
-
-    # Add recovery hint for not-found errors
-    if isinstance(result, dict) and result.get("success") is False:
-        msg = result.get("message", "")
-        if "not found" in msg.lower():
-            mail_sh = str(Path(__file__).resolve().parent / "mail.sh")
-            result.setdefault("recovery",
-                f"IDs may have shifted — re-list for current IDs: {mail_sh} list-recent")
-
-    _output_op(result, "add-label", t0)
-
-
 def cmd_move_email(args, t0):
     from lib.ops.move import move_email
 
-    result = move_email(args.id, args.to)
+    identifier, by_mid = _resolve_id_or_message_id(args, "move-email", t0)
+    if identifier is None:
+        return
+
+    result = move_email(identifier, args.to, by_message_id=by_mid)
     _output_op(result, "move-email", t0)
-
-
-def cmd_move_to_todos(args, t0):
-    from lib.ops.move import move_to_todos
-
-    result = move_to_todos(args.id)
-    _output_op(result, "move-to-todos", t0)
 
 
 def cmd_build_index(args, t0):
@@ -505,33 +498,6 @@ def cmd_index_cancel(args, t0):
     ))
 
 
-def _bg_fetch_batch(ids: list[int], run_jxa_fn, max_retries: int = 3) -> dict[int, str]:
-    """Fetch content for multiple IDs in a single osascript call."""
-    ids_js = ",".join(str(i) for i in ids)
-    script = f"""
-var targetIds = [{ids_js}];
-var results = [];
-for (var i = 0; i < targetIds.length; i++) {{
-    var mid = targetIds[i];
-    var msg = MailCore.findMessageAcrossAccounts(mid);
-    var content = "";
-    if (msg) {{ try {{ content = msg.content() || ""; }} catch(e) {{}} }}
-    results.push({{id: mid, content: content}});
-}}
-JSON.stringify(results);
-"""
-    for attempt in range(max_retries):
-        try:
-            result = run_jxa_fn(script, timeout=15 * len(ids))
-            if isinstance(result, list):
-                return {item["id"]: item.get("content", "") for item in result if item.get("content")}
-            return {}
-        except Exception:
-            if attempt < max_retries - 1:
-                time.sleep(min(30, 2 ** attempt))
-    return {}
-
-
 def cmd_background_index(args, t0):
     """Hidden command: fetch content for specific IDs via JXA and cache them.
 
@@ -544,7 +510,7 @@ def cmd_background_index(args, t0):
     from lib.search_index.schema import PROGRESS_PATH, LOCK_PATH
 
     HEARTBEAT_INTERVAL = 10
-    JXA_BATCH_SIZE = 5
+    BATCH_COMMIT_SIZE = 10
     MAX_RETRIES = 3
 
     msg_ids = [int(i) for i in args.ids]
@@ -604,6 +570,7 @@ def cmd_background_index(args, t0):
             _atomic_write_json(PROGRESS_PATH, progress)
 
             last_heartbeat = time.monotonic()
+            uncommitted = 0
 
             while progress["remaining_ids"]:
                 current_progress = None
@@ -622,22 +589,43 @@ def cmd_background_index(args, t0):
                 if not progress["remaining_ids"]:
                     break
 
-                chunk = progress["remaining_ids"][:JXA_BATCH_SIZE]
-                chunk_results = _bg_fetch_batch(chunk, run_jxa_with_core, MAX_RETRIES)
+                mid = progress["remaining_ids"][0]
+                success = False
 
-                for mid in chunk:
-                    content = chunk_results.get(mid, "")
-                    if content:
-                        mgr.cache_content(
-                            message_id=mid, subject="", sender="",
-                            content=content, date_received="",
-                        )
-                        progress["completed"] += 1
-                    else:
-                        progress["failed"] += 1
-                    progress["attempted_ids"].append(mid)
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        script = f"""
+var msg = MailCore.findMessageAcrossAccounts({mid});
+if (msg) {{
+    var content = "";
+    try {{ content = msg.content() || ""; }} catch(e) {{}}
+    JSON.stringify({{id: {mid}, content: content}});
+}} else {{
+    JSON.stringify({{id: {mid}, content: ""}});
+}}"""
+                        result = run_jxa_with_core(script, timeout=15)
+                        if result and result.get("content"):
+                            mgr.cache_content(
+                                message_id=mid,
+                                subject="",
+                                sender="",
+                                content=result["content"],
+                                date_received="",
+                            )
+                            uncommitted += 1
+                        success = True
+                        break
+                    except Exception:
+                        if attempt < MAX_RETRIES - 1:
+                            delay = min(30, (2 ** attempt) + (time.monotonic() % 1))
+                            time.sleep(delay)
 
-                progress["remaining_ids"] = [i for i in progress["remaining_ids"] if i not in set(chunk)]
+                progress["attempted_ids"].append(mid)
+                progress["remaining_ids"] = [i for i in progress["remaining_ids"] if i != mid]
+                if success:
+                    progress["completed"] += 1
+                else:
+                    progress["failed"] += 1
 
                 now = time.monotonic()
                 if now - last_heartbeat >= HEARTBEAT_INTERVAL or not progress["remaining_ids"]:
@@ -721,7 +709,8 @@ def build_parser():
 
     # read-email
     p = sub.add_parser("read-email", help="read full email content by ID")
-    p.add_argument("--id", required=True, help="email ID")
+    p.add_argument("--id", default=None, help="email integer ID")
+    p.add_argument("--message-id", default=None, help="RFC 2822 message-id (preferred, stable across syncs)")
 
     # search
     p = sub.add_parser("search", help="search emails by content, subject, or sender")
@@ -755,7 +744,8 @@ def build_parser():
 
     # reply-draft
     p = sub.add_parser("reply-draft", help="create a reply draft")
-    p.add_argument("--id", required=True, help="original email ID")
+    p.add_argument("--id", default=None, help="original email integer ID")
+    p.add_argument("--message-id", default=None, help="original email RFC 2822 message-id (preferred)")
     p.add_argument("--body", required=True, help="reply body")
     p.add_argument("--reply-all", action="store_true", help="reply to all recipients")
     p.add_argument("--cc", nargs="+", help="additional CC addresses")
@@ -764,7 +754,8 @@ def build_parser():
 
     # forward-draft
     p = sub.add_parser("forward-draft", help="create a forward draft")
-    p.add_argument("--id", required=True, help="original email ID")
+    p.add_argument("--id", default=None, help="original email integer ID")
+    p.add_argument("--message-id", default=None, help="original email RFC 2822 message-id (preferred)")
     p.add_argument("--account", required=True, help="sending account email")
     p.add_argument("--body", required=True, help="forward body text")
     p.add_argument("--to", nargs="+", required=True, help="recipient addresses")
@@ -774,34 +765,18 @@ def build_parser():
 
     # delete-email (single and batch)
     p = sub.add_parser("delete-email", help="delete email(s) by ID")
-    p.add_argument("--ids", nargs="+", required=True, help="email ID(s) to delete")
-    p.add_argument("--dry-run", action="store_true", help="preview what would be deleted without deleting")
-    p.add_argument("--force", action="store_true", help="override safety caps (batch size, flagged emails)")
+    p.add_argument("--ids", nargs="+", default=None, help="email integer ID(s) to delete")
+    p.add_argument("--message-ids", nargs="+", default=None, help="RFC 2822 message-id(s) to delete (preferred)")
 
     # delete-draft
     p = sub.add_parser("delete-draft", help="delete a draft by ID")
     p.add_argument("--id", required=True, help="draft ID")
 
-    # amend-subject
-    p = sub.add_parser("amend-subject", help="amend the subject of any email (edits .emlx on disk)")
-    p.add_argument("--id", required=True, help="email ID")
-    p.add_argument("--subject", required=True, help="new subject line")
-    p.add_argument("--dry-run", action="store_true", help="preview what would change without editing")
-
-    # add-label
-    p = sub.add_parser("add-label", help="prepend a [label] tag to an email's subject")
-    p.add_argument("--id", required=True, help="email ID")
-    p.add_argument("--label", required=True, help="label text (will be wrapped in brackets)")
-    p.add_argument("--dry-run", action="store_true", help="preview what would change without editing")
-
     # move-email
     p = sub.add_parser("move-email", help="move an email to a folder")
-    p.add_argument("--id", required=True, help="email ID")
+    p.add_argument("--id", default=None, help="email integer ID")
+    p.add_argument("--message-id", default=None, help="RFC 2822 message-id (preferred)")
     p.add_argument("--to", required=True, help="destination folder name")
-
-    # move-to-todos
-    p = sub.add_parser("move-to-todos", help="move an email to the 📝todos folder")
-    p.add_argument("--id", required=True, help="email ID")
 
     # build-index
     sub.add_parser("build-index", help="build/rebuild FTS5 search index from disk")
@@ -836,10 +811,7 @@ COMMAND_MAP = {
     "forward-draft": cmd_forward_draft,
     "delete-email": cmd_delete_email,
     "delete-draft": cmd_delete_draft,
-    "amend-subject": cmd_amend_subject,
-    "add-label": cmd_add_label,
     "move-email": cmd_move_email,
-    "move-to-todos": cmd_move_to_todos,
     "build-index": cmd_build_index,
     "index-status": cmd_index_status,
     "index-cancel": cmd_index_cancel,

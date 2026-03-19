@@ -4,8 +4,8 @@ read_full_email splits into two phases so a slow msg.content() call
 (large HTML, inline images, Exchange sync stall) never blocks the
 metadata that is always fast:
 
-  Phase 1 — metadata: subject, sender, dates, recipients, attachments (~0.5 s)
-  Phase 2 — content:  JXA content() (10 s cap) → search index → disk .emlx
+  Phase 1 - metadata: subject, sender, dates, recipients, attachments (~0.5 s)
+  Phase 2 - content:  JXA content() (10 s cap) -> search index -> disk .emlx
 """
 
 from ..jxa import run_jxa_with_core, JXAError
@@ -14,23 +14,22 @@ _CONTENT_JXA_TIMEOUT = 10
 _METADATA_JXA_TIMEOUT = 15
 
 
-def read_full_email(email_id: str) -> dict:
-    """Get full email content including all details and attachments.
+def read_full_email(identifier: str, by_message_id: bool = False) -> dict:
+    """Get full email content including all details and attachments."""
+    if by_message_id:
+        result = _fetch_metadata_by_mid(identifier)
+        eid_for_content = None
+    else:
+        try:
+            eid_for_content = int(identifier.strip())
+        except ValueError as e:
+            return {"success": False, "message": f"invalid email id: {e}"}
+        result = _fetch_metadata(eid_for_content)
 
-    Phase 1 fetches metadata (always fast).
-    Phase 2 fetches content with cascading fallback:
-      JXA content() → search index → disk .emlx → metadata-only result.
-    After a successful content fetch, caches in the search index.
-    """
-    try:
-        eid = int(email_id.strip())
-    except ValueError as e:
-        return {"success": False, "message": f"invalid email id: {e}"}
-
-    result = _fetch_metadata(eid)
     if result is None:
-        return {"success": False, "message": f"email with id {eid} not found"}
+        return {"success": False, "message": f"email with id {identifier} not found"}
 
+    eid = int(result["id"])
     content, source = _fetch_content_with_fallback(eid, result)
     result["content"] = content
     result["content_source"] = source
@@ -46,15 +45,13 @@ def read_full_email(email_id: str) -> dict:
     result["sender_name"] = sender.split("<")[0].strip() if "<" in sender else sender
 
     _cache_on_read(result)
-
     return result
 
 
-def _fetch_metadata(eid: int) -> dict | None:
-    """Phase 1: fetch everything except content() — always fast."""
-    script = f"""
-var targetId = {eid};
-var msg = MailCore.findMessageAcrossAccounts(targetId);
+def _build_metadata_jxa(find_expr: str) -> str:
+    """Build JXA metadata extraction script given a find expression."""
+    return f"""
+var msg = {find_expr};
 if (!msg) {{
     JSON.stringify({{found: false}});
 }} else {{
@@ -98,7 +95,6 @@ if (!msg) {{
     JSON.stringify({{
         found: true,
         id: String(msg.id()),
-        rfc_message_id: msg.messageId() || "",
         subject: msg.subject() || "",
         sender: msg.sender() || "",
         date_received: MailCore.formatDate(msg.dateReceived()),
@@ -114,6 +110,31 @@ if (!msg) {{
     }});
 }}
 """
+
+
+def _fetch_metadata(eid: int) -> dict | None:
+    """Phase 1: fetch everything except content() by integer id."""
+    script = f"var targetId = {eid};\n" + _build_metadata_jxa(
+        "MailCore.findMessageAcrossAccounts(targetId)"
+    )
+    try:
+        result = run_jxa_with_core(script, timeout=_METADATA_JXA_TIMEOUT)
+    except (TimeoutError, JXAError):
+        return None
+
+    if not result or not result.get("found"):
+        return None
+
+    result.pop("found", None)
+    return result
+
+
+def _fetch_metadata_by_mid(message_id: str) -> dict | None:
+    """Phase 1: fetch everything except content() by RFC 2822 message-id."""
+    safe_mid = message_id.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'var targetMid = "{safe_mid}";\n' + _build_metadata_jxa(
+        "MailCore.findMessageByMessageId(targetMid)"
+    )
     try:
         result = run_jxa_with_core(script, timeout=_METADATA_JXA_TIMEOUT)
     except (TimeoutError, JXAError):
@@ -127,11 +148,7 @@ if (!msg) {{
 
 
 def _fetch_content_with_fallback(eid: int, metadata: dict) -> tuple[str, str]:
-    """Phase 2: try JXA content(), then search index, then disk .emlx.
-
-    Returns (content_string, source_label).
-    source_label is one of: "jxa", "search_index", "disk", "unavailable".
-    """
+    """Phase 2: try JXA content(), then search index, then disk .emlx."""
     content = _try_jxa_content(eid)
     if content:
         return content, "jxa"

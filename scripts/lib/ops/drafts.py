@@ -354,56 +354,25 @@ def send_draft(draft_id: str) -> dict:
 # ------------------------------------------------------------------
 
 
-def reply_draft(
-    original_email_id: str,
-    body: str,
-    reply_all: bool = False,
-    extra_cc: list[str] = None,
-    extra_bcc: list[str] = None,
-    extra_attachments: list[str] = None,
-) -> dict:
-    """Draft a reply to an original email and leave it as a draft."""
-    try:
-        original_email_id = validate_id(original_email_id, "email_id")
-    except ValueError as e:
-        return {"success": False, "message": str(e)}
-
-    extra_cc = extra_cc or []
-    extra_bcc = extra_bcc or []
-    extra_attachments = extra_attachments or []
-
-    attachment_paths, error_msg = validate_attachments(extra_attachments)
-    if error_msg:
-        return {"success": False, "message": error_msg}
-
-    body_escaped = escape_applescript(body)
-    cc_section = build_recipients(extra_cc, "cc", "newMessage")
-    bcc_section = build_recipients(extra_bcc, "bcc", "newMessage")
-    attachment_section = build_attachments(attachment_paths, "newMessage")
-
-    reply_all_section = ""
-    if reply_all:
-        reply_all_section = """
-            repeat with recip in originalToRecips
-                set recipAddr to address of recip
-                if recipAddr is not accountEmail then
-                    tell newMessage to make new to recipient with properties {address:recipAddr}
-                end if
+def _build_find_email_block(identifier: str, by_message_id: bool) -> str:
+    """Build the AppleScript find-email block for reply/forward operations."""
+    if by_message_id:
+        escaped_mid = escape_applescript(identifier)
+        return f"""
+            repeat with acc in accounts
+                repeat with mbox in mailboxes of acc
+                    set msgList to (messages of mbox whose message id is "{escaped_mid}")
+                    if (count of msgList) > 0 then
+                        set foundEmail to item 1 of msgList
+                        set foundAccount to acc
+                        exit repeat
+                    end if
+                end repeat
+                if foundEmail is not missing value then exit repeat
             end repeat
-            repeat with recip in originalCcRecips
-                set recipAddr to address of recip
-                if recipAddr is not accountEmail then
-                    tell newMessage to make new cc recipient with properties {address:recipAddr}
-                end if
-            end repeat
-            """
-
-    script = textwrap.dedent(
-        f"""
-        tell application "Mail"
-            set targetId to {original_email_id} as integer
-            set foundEmail to missing value
-            set foundAccount to missing value
+"""
+    return f"""
+            set targetId to {identifier} as integer
 
             repeat with acc in accounts
                 repeat with mbox in mailboxes of acc
@@ -435,7 +404,63 @@ def reply_draft(
                     if foundEmail is not missing value then exit repeat
                 end repeat
             end if
+"""
 
+
+def reply_draft(
+    original_email_id: str,
+    body: str,
+    reply_all: bool = False,
+    extra_cc: list[str] = None,
+    extra_bcc: list[str] = None,
+    extra_attachments: list[str] = None,
+    by_message_id: bool = False,
+) -> dict:
+    """Draft a reply to an original email and leave it as a draft."""
+    if not by_message_id:
+        try:
+            original_email_id = validate_id(original_email_id, "email_id")
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+
+    extra_cc = extra_cc or []
+    extra_bcc = extra_bcc or []
+    extra_attachments = extra_attachments or []
+
+    attachment_paths, error_msg = validate_attachments(extra_attachments)
+    if error_msg:
+        return {"success": False, "message": error_msg}
+
+    body_escaped = escape_applescript(body)
+    cc_section = build_recipients(extra_cc, "cc", "newMessage")
+    bcc_section = build_recipients(extra_bcc, "bcc", "newMessage")
+    attachment_section = build_attachments(attachment_paths, "newMessage")
+
+    reply_all_section = ""
+    if reply_all:
+        reply_all_section = """
+            repeat with recip in originalToRecips
+                set recipAddr to address of recip
+                if recipAddr is not accountEmail then
+                    tell newMessage to make new to recipient with properties {address:recipAddr}
+                end if
+            end repeat
+            repeat with recip in originalCcRecips
+                set recipAddr to address of recip
+                if recipAddr is not accountEmail then
+                    tell newMessage to make new cc recipient with properties {address:recipAddr}
+                end if
+            end repeat
+            """
+
+    find_block = _build_find_email_block(original_email_id, by_message_id)
+
+    script = textwrap.dedent(
+        f"""
+        tell application "Mail"
+            set foundEmail to missing value
+            set foundAccount to missing value
+{find_block}
             if foundEmail is missing value then
                 return "EMAIL_NOT_FOUND"
             end if
@@ -482,11 +507,10 @@ def reply_draft(
 
     if output == "EMAIL_NOT_FOUND":
         return {"success": False, "message": f"original email with id {original_email_id} not found"}
-    elif output == "SUCCESS":
+    if output == "SUCCESS":
         sync_mail_state()
         return {"success": True, "message": "reply draft created successfully - query drafts after a delay to get stable id"}
-    else:
-        return {"success": False, "message": f"unexpected output: {output}"}
+    return {"success": False, "message": f"unexpected output: {output}"}
 
 
 # ------------------------------------------------------------------
@@ -516,12 +540,13 @@ for (var a = 0; a < accounts.length && results.length < limit; a++) {{
         var mbox = mboxes[m];
         var folderName = mboxNames[m];
         var data = MailCore.batchFetch(mbox.messages, [
-            "id", "subject", "sender", "dateReceived"
+            "id", "subject", "sender", "dateReceived", "messageId"
         ]);
         var count = Math.min(data.id.length, limit - results.length);
         for (var i = 0; i < count; i++) {{
             results.push({{
                 id: String(data.id[i]),
+                message_id: data.messageId[i] || "",
                 subject: data.subject[i] || "",
                 sender: data.sender[i] || "",
                 date_received: MailCore.formatDate(data.dateReceived[i]) || "",

@@ -12,45 +12,24 @@ from ..applescript import (
 )
 
 
-def make_forward_draft(
-    email_id: str,
-    account: str,
-    body: str,
-    to: list[str],
-    cc: list[str] = None,
-    bcc: list[str] = None,
-    new_attachments: list[str] = None,
-) -> dict:
-    """Create a forward draft from an existing email."""
-    try:
-        email_id = validate_id(email_id, "email_id")
-    except ValueError as e:
-        return {"success": False, "message": str(e)}
-
-    cc = cc or []
-    bcc = bcc or []
-    new_attachments = new_attachments or []
-
-    if not to:
-        return {"success": False, "message": "at least one recipient is required in the 'to' list"}
-
-    attachment_paths, error_msg = validate_attachments(new_attachments)
-    if error_msg:
-        return {"success": False, "message": error_msg}
-
-    body_escaped = escape_applescript(body)
-    account_escaped = escape_applescript(account)
-
-    to_section = build_recipients(to, "to", "newMessage")
-    cc_section = build_recipients(cc, "cc", "newMessage")
-    bcc_section = build_recipients(bcc, "bcc", "newMessage")
-    attachment_section = build_attachments(attachment_paths, "newMessage")
-
-    script = textwrap.dedent(
-        f"""
-        tell application "Mail"
-            set targetId to {email_id} as integer
-            set foundEmail to missing value
+def _build_find_block(identifier: str, by_message_id: bool) -> str:
+    """Build AppleScript block to find an email for forwarding."""
+    if by_message_id:
+        escaped_mid = escape_applescript(identifier)
+        return f"""
+            repeat with acc in accounts
+                repeat with mbox in mailboxes of acc
+                    set msgList to (messages of mbox whose message id is "{escaped_mid}")
+                    if (count of msgList) > 0 then
+                        set foundEmail to item 1 of msgList
+                        exit repeat
+                    end if
+                end repeat
+                if foundEmail is not missing value then exit repeat
+            end repeat
+"""
+    return f"""
+            set targetId to {identifier} as integer
 
             repeat with acc in accounts
                 repeat with mbox in mailboxes of acc
@@ -80,7 +59,52 @@ def make_forward_draft(
                     if foundEmail is not missing value then exit repeat
                 end repeat
             end if
+"""
 
+
+def make_forward_draft(
+    email_id: str,
+    account: str,
+    body: str,
+    to: list[str],
+    cc: list[str] = None,
+    bcc: list[str] = None,
+    new_attachments: list[str] = None,
+    by_message_id: bool = False,
+) -> dict:
+    """Create a forward draft from an existing email."""
+    if not by_message_id:
+        try:
+            email_id = validate_id(email_id, "email_id")
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+
+    cc = cc or []
+    bcc = bcc or []
+    new_attachments = new_attachments or []
+
+    if not to:
+        return {"success": False, "message": "at least one recipient is required in the 'to' list"}
+
+    attachment_paths, error_msg = validate_attachments(new_attachments)
+    if error_msg:
+        return {"success": False, "message": error_msg}
+
+    body_escaped = escape_applescript(body)
+    account_escaped = escape_applescript(account)
+
+    to_section = build_recipients(to, "to", "newMessage")
+    cc_section = build_recipients(cc, "cc", "newMessage")
+    bcc_section = build_recipients(bcc, "bcc", "newMessage")
+    attachment_section = build_attachments(attachment_paths, "newMessage")
+
+    find_block = _build_find_block(email_id, by_message_id)
+
+    script = textwrap.dedent(
+        f"""
+        tell application "Mail"
+            set foundEmail to missing value
+{find_block}
             if foundEmail is missing value then
                 return "EMAIL_NOT_FOUND"
             end if
@@ -156,10 +180,9 @@ def make_forward_draft(
 
     if output == "EMAIL_NOT_FOUND":
         return {"success": False, "message": f"original email with id {email_id} not found"}
-    elif output == "ACCOUNT_NOT_FOUND":
+    if output == "ACCOUNT_NOT_FOUND":
         return {"success": False, "message": f"account {account} not found"}
-    elif output == "SUCCESS":
+    if output == "SUCCESS":
         sync_mail_state()
         return {"success": True, "message": "forward draft created successfully - query drafts after a delay to get stable id"}
-    else:
-        return {"success": False, "message": f"unexpected output: {output}"}
+    return {"success": False, "message": f"unexpected output: {output}"}

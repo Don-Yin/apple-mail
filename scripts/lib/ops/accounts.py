@@ -13,26 +13,26 @@ def list_accounts():
 
 
 def list_account_folders(account_email: str):
-    """Get folder tree for a specific account (~1-2 s due to per-mailbox message counts)."""
+    """Get folder details for a specific account."""
     safe_email = json.dumps(account_email)
     script = f"""
 var acct = MailCore.getAccountByEmail({safe_email});
+var accName = acct.name();
 var data = MailCore.listMailboxesWithCounts(acct);
+for (var i = 0; i < data.length; i++) {{
+    data[i].folder_path = accName + "/" + data[i].folder_name;
+}}
 JSON.stringify(data);
 """
     try:
         folders = run_jxa_with_core(script)
-        return sorted(folders, key=lambda x: x.get("folder_path", x["folder_name"]).lower())
+        return sorted(folders, key=lambda x: x["folder_name"].lower())
     except (JXAError, TimeoutError):
         return []
 
 
 def list_recent_emails(most_recent_n_emails: int = 20, include_content: bool = False):
-    """List recent emails from all account inboxes.
-
-    Returns metadata only by default (~0.3 s). When include_content=True, adds a
-    preview field with the first ~5000 chars from the search index.
-    """
+    """List recent emails from all account inboxes."""
     limit = most_recent_n_emails if most_recent_n_emails else 999999
     script = f"""
 var accounts = Mail.accounts();
@@ -51,18 +51,19 @@ for (var a = 0; a < accounts.length; a++) {{
         if (mboxNames[m].toLowerCase() !== "inbox") continue;
         var mbox = mboxes[m];
         var folderName = mboxNames[m];
-        var data = MailCore.fetchLimited(mbox,
-            ["id", "subject", "sender", "dateReceived", "messageId"], limit);
-        var count = data.id.length;
+        var data = MailCore.batchFetch(mbox.messages, [
+            "id", "subject", "sender", "dateReceived", "messageId"
+        ]);
+        var count = Math.min(data.id.length, limit);
         for (var i = 0; i < count; i++) {{
             results.push({{
                 id: String(data.id[i]),
+                message_id: data.messageId[i] || "",
                 subject: data.subject[i] || "",
                 sender: data.sender[i] || "",
                 date_received: MailCore.formatDate(data.dateReceived[i]) || "",
                 account_email: accEmail,
-                folder_name: folderName,
-                rfc_message_id: data.messageId[i] || ""
+                folder_name: folderName
             }});
         }}
         break;

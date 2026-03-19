@@ -19,18 +19,7 @@ from .. import relative_time
 
 
 class SearchIndexManager:
-    """Manages the FTS5 search index.
-
-    Provides:
-    - build_from_disk(): full index build by reading .emlx files
-    - sync_updates(): incremental sync (add new, remove deleted)
-    - search(): FTS5 search with BM25 ranking
-    - batch_content(): primary + secondary lookup with ID-shift self-healing
-    - targeted_index(): find specific .emlx files on disk, parse, insert
-    - cache_content(): single-email cache with dedup
-    - get_index_age(): MAX(indexed_at)
-    - maybe_prune(): delete oldest 30% if DB exceeds threshold
-    """
+    """Manages the FTS5 search index for email content retrieval and search."""
 
     def __init__(self, db_path: Path | None = None):
         self._db_path = db_path or DB_PATH
@@ -87,7 +76,6 @@ class SearchIndexManager:
                     em.get("content", ""),
                     em.get("date_received", ""),
                     em.get("emlx_path", ""),
-                    em.get("rfc_message_id", ""),
                 ))
 
                 if len(batch) >= batch_size:
@@ -181,7 +169,6 @@ class SearchIndexManager:
                             parsed.get("content", ""),
                             parsed.get("date_received", ""),
                             str(emlx_path),
-                            parsed.get("rfc_message_id", ""),
                         ))
                     break
 
@@ -270,10 +257,7 @@ class SearchIndexManager:
         return result
 
     def targeted_index(self, msg_ids: set[int]) -> dict[int, str]:
-        """Find specific .emlx files on disk by message ID, parse and insert content.
-
-        Uses a single directory walk with set lookup instead of per-ID rglob.
-        """
+        """Find specific .emlx files on disk by message ID, parse and insert content."""
         if not msg_ids:
             return {}
 
@@ -282,41 +266,31 @@ class SearchIndexManager:
         except (FileNotFoundError, PermissionError):
             return {}
 
-        target_names = {f"{mid}.emlx" for mid in msg_ids}
-        remaining = set(msg_ids)
-        candidates: dict[int, Path] = {}
-
-        for p in mail_dir.rglob("*.emlx"):
-            if not remaining:
-                break
-            if p.name in target_names and ".partial.emlx" not in p.name:
-                mid = int(p.stem)
-                if mid in remaining:
-                    candidates[mid] = p
-                    remaining.discard(mid)
-
         conn = self._get_conn()
         found: dict[int, str] = {}
 
-        for msg_id, emlx_path in candidates.items():
-            parsed = parse_emlx(emlx_path)
-            if parsed and parsed.get("content"):
-                account, mailbox = infer_account_mailbox(emlx_path, mail_dir)
-                conn.execute(
-                    INSERT_EMAIL_SQL,
-                    (
-                        parsed["id"],
-                        account,
-                        mailbox,
-                        parsed.get("subject", ""),
-                        parsed.get("sender", ""),
-                        parsed.get("content", ""),
-                        parsed.get("date_received", ""),
-                        str(emlx_path),
-                        parsed.get("rfc_message_id", ""),
-                    ),
-                )
-                found[msg_id] = parsed["content"]
+        for msg_id in msg_ids:
+            for emlx_path in mail_dir.rglob(f"{msg_id}.emlx"):
+                if ".partial.emlx" in emlx_path.name:
+                    continue
+                parsed = parse_emlx(emlx_path)
+                if parsed and parsed.get("content"):
+                    account, mailbox = infer_account_mailbox(emlx_path, mail_dir)
+                    conn.execute(
+                        INSERT_EMAIL_SQL,
+                        (
+                            parsed["id"],
+                            account,
+                            mailbox,
+                            parsed.get("subject", ""),
+                            parsed.get("sender", ""),
+                            parsed.get("content", ""),
+                            parsed.get("date_received", ""),
+                            str(emlx_path),
+                        ),
+                    )
+                    found[msg_id] = parsed["content"]
+                    break
 
         if found:
             conn.commit()
@@ -332,7 +306,6 @@ class SearchIndexManager:
         date_received: str,
         account: str = "",
         mailbox: str = "",
-        rfc_message_id: str = "",
     ):
         """Cache content for a single email with deduplication.
 
@@ -356,14 +329,13 @@ class SearchIndexManager:
         if existing:
             conn.execute(
                 "UPDATE emails SET message_id = ?, content = ?, sender = ?, "
-                "rfc_message_id = COALESCE(NULLIF(?, ''), rfc_message_id), "
                 "indexed_at = datetime('now') WHERE rowid = ?",
-                (message_id, content, sender, rfc_message_id, existing[0]),
+                (message_id, content, sender, existing[0]),
             )
         else:
             conn.execute(
                 INSERT_EMAIL_SQL,
-                (message_id, account, mailbox, subject, sender, content, date_received, "", rfc_message_id),
+                (message_id, account, mailbox, subject, sender, content, date_received, ""),
             )
 
         conn.commit()

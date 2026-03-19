@@ -6,86 +6,121 @@ disable-model-invocation: true
 
 # apple mail skill
 
-all commands: `.cursor/skills/apple-mail/scripts/mail.sh <command> [args]`
+read, write, search, and manage emails in macos mail.app via cli.
 
-all output is json: `{success, data, error, warnings, meta}`
+## quick start
 
-## commands
+```bash
+# verify setup (mail.app running, full disk access, dependencies)
+.cursor/skills/apple-mail/scripts/check-setup.sh
 
-| command | what it does |
-| --- | --- |
-| `list-accounts` | list all mail accounts |
-| `list-folders --account EMAIL` | folder tree with email counts ; output includes `folder_path` for use with `move-email` |
-| `list-recent [--limit N] [--include-content]` | recent inbox emails ; always use `--include-content` for triage |
-| `list-emails --account EMAIL --folder NAME [--limit N] [--include-content]` | emails in a specific folder |
-| `list-drafts [--limit N] [--include-content]` | drafts across all accounts |
-| `read-email --id ID` | full email content, recipients, attachments |
-| `search --query TEXT [--scope all\|subject\|sender] [--limit N]` | search emails |
-| `compose-draft --account EMAIL --subject TEXT --body TEXT --to ADDR...` | create a new draft |
-| `amend-draft --id ID [--subject TEXT] [--body TEXT]` | modify an existing draft |
-| `send-draft --id ID` | send a draft |
-| `reply-draft --id ID --body TEXT [--reply-all]` | create a reply draft |
-| `forward-draft --id ID --account EMAIL --body TEXT --to ADDR...` | forward as draft |
-| `delete-email --ids ID [ID...] [--dry-run] [--force]` | delete email(s) ; exchange-safe via RFC Message-ID |
-| `delete-draft --id ID` | delete a draft |
-| `move-email --id ID --to FOLDER` | move email ; accepts leaf name or full path (e.g. `--to "📂own-dirs/paperworks"`) |
-| `move-to-todos --id ID` | shortcut for move to 📝todos |
-| `amend-subject --id ID --subject TEXT [--dry-run]` | edit subject on disk ; quits+relaunches Mail.app |
-| `add-label --id ID --label TEXT [--dry-run]` | prepend [label] to subject ; wraps amend-subject |
-| `build-index` | build/rebuild search index (~30-120 s) |
+# build the search index (required for search and content previews)
+.cursor/skills/apple-mail/scripts/mail.sh build-index
 
-array args use space separation: `--to a@b.com c@d.com --cc x@y.com`
+# list recent emails with content previews
+.cursor/skills/apple-mail/scripts/mail.sh list-recent --include-content
+```
 
-for detailed parameter docs, see `references/tool-reference.md`.
+## important: symlink path
+
+this skill lives under `.cursor/skills/apple-mail/` which may be a symlink. all script invocations should use the resolved path from this skill directory. run `.cursor/skills/apple-mail/scripts/check-setup.sh` to see resolved paths.
+
+## tool reference
+
+all commands are invoked via `.cursor/skills/apple-mail/scripts/mail.sh <command> [args]`.
+
+all output is json with this contract:
+
+```json
+{"success": bool, "data": ..., "error": ..., "warnings": [], "meta": {...}}
+```
+
+| command                                                                     | what it does                                | speed                                  |
+| --------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------- |
+| `server-info`                                                               | skill version and metadata                  | instant                                |
+| `check-health`                                                              | verify mail.app is responding               | ~1 s                                   |
+| `list-accounts`                                                             | list all mail accounts                      | ~0.15 s                                |
+| `list-folders --account EMAIL`                                              | list folders with email counts              | ~1-2 s                                 |
+| `list-recent [--limit N] [--include-content]`                               | recent emails from all inboxes              | ~0.3 s                                 |
+| `list-emails --account EMAIL --folder NAME [--limit N] [--include-content]` | emails in a folder                          | ~0.3 s                                 |
+| `list-drafts [--limit N] [--include-content]`                               | drafts across all accounts                  | ~0.25 s                                |
+| `read-email --message-id MID` or `--id ID`                                  | full email content, recipients, attachments | ~1-2 s                                 |
+| `search --query TEXT [--scope all\|subject\|sender] [--limit N]`            | search emails                               | ~1 ms (all) / ~200 ms (subject/sender) |
+| `compose-draft --account EMAIL --subject TEXT --body TEXT --to ADDR...`     | create a new draft                          | ~1 s                                   |
+| `amend-draft --id ID [--subject TEXT] [--body TEXT]`                        | modify an existing draft                    | ~2 s                                   |
+| `send-draft --id ID`                                                        | send a draft                                | ~2 s                                   |
+| `reply-draft --message-id MID --body TEXT [--reply-all]` or `--id ID`       | create a reply draft                        | ~2 s                                   |
+| `forward-draft --message-id MID --account EMAIL --body TEXT --to ADDR...`   | forward as draft                            | ~2 s                                   |
+| `delete-email --message-ids MID [MID...]` or `--ids ID [ID...]`            | delete email(s) (single or batch)           | ~1-3 s                                 |
+| `delete-draft --id ID`                                                      | delete a draft                              | ~1 s                                   |
+| `move-email --message-id MID --to FOLDER` or `--id ID`                     | move email to folder                        | ~3-5 s                                 |
+| `build-index`                                                               | build/rebuild fts5 search index             | ~30-120 s                              |
+| `index-status`                                                              | check background indexing progress          | instant                                |
+| `index-cancel`                                                              | cancel background indexing                  | instant                                |
+
+array arguments use space separation: `--to a@b.com c@d.com --cc x@y.com`
+
+for detailed parameter docs and return shapes, see `references/tool-reference.md`.
 
 ## workflows
 
 ### triage inbox
 
-1. `list-recent --include-content` ; always include content -- metadata-only has ~30-40% error rate
-2. `read-email --id ID` ; mandatory for: unknown senders, non-English subjects, generic subjects, attachments, anything <90% confidence
-3. `delete-email --ids ID1 ID2 ... --dry-run` ; verify resolved subjects match before deleting
-4. `delete-email --ids ID1 ID2 ...` ; confirm with user first
-5. `move-email --id ID --to Archive` ; or archive instead of deleting
+1. `list-recent --include-content` -- scan recent emails with previews (note the `message_id` field in output)
+2. `read-email --message-id MID` -- open specific email for full content (prefer `--message-id` over `--id`)
+3. `move-email --message-id MID --to Archive` or `delete-email --message-ids MID` -- act on it
 
-tiered confirmation: batch confident garbage (CI, marketing, expired promos) ; list separately anything matching a high-risk category
+### reply to an email
 
-### reply / compose / send
+1. `read-email --message-id MID` -- read the email
+2. `reply-draft --message-id MID --body "..." [--reply-all]` -- create reply draft
+3. `list-drafts` -- confirm draft and get stable id
+4. `send-draft --id DRAFT_ID` -- send
 
-1. `read-email --id ID` then `reply-draft --id ID --body "..."` (or `compose-draft`)
-2. `list-drafts` ; get stable draft id
-3. show draft to user, wait for explicit confirmation
-4. `send-draft --id DRAFT_ID`
+### search and act
 
-### move to folder
+1. `search --query "invoice" --scope all` -- find matching emails
+2. `read-email --message-id MID` -- read full content
+3. take action (reply, forward, move, delete)
 
-`move-email --to` accepts both leaf names and full paths (use `folder_path` from `list-folders` output):
-- `--to paperworks` ; finds first match at any depth
-- `--to "📂own-dirs/paperworks"` ; walks path explicitly, no ambiguity ; prefer this
+### compose and send
 
-if folder does not exist: tell the user to create it in Outlook Web App (outlook.office.com), then `list-folders` to verify it synced, then move.
-
-never create folders via AppleScript/osascript/JXA -- they create local-only ghosts that Exchange ignores. never attempt workarounds (exchangelib, msal, Graph API, EWS, PowerShell). the error messages from `move-email` include recovery instructions.
+1. `compose-draft --account me@example.com --subject "Hello" --body "..." --to recipient@example.com`
+2. `list-drafts` — get stable draft id
+3. `amend-draft --id ID --body "revised text"` — (optional) revise
+4. `send-draft --id ID` — send
 
 ## safety rules
 
-1. always draft first, show draft to user, wait for confirmation before sending
-2. never delete without user confirmation ; use `--dry-run` first for batches
-3. if any command returns "not found", re-list the folder for fresh IDs and retry (Exchange reassigns integer IDs on sync)
-4. `amend-subject` / `add-label` quit and relaunch Mail.app -- warn user about unsaved compose windows ; always `--dry-run` first
+1. always draft first -- never send without creating and confirming a draft
+2. never delete without confirmation -- always confirm with the user before deletion
+3. prefer `--message-id` over `--id` -- the RFC 2822 message-id (the `message_id` field from list commands) is stable across exchange syncs; integer ids can shift
+4. verify draft ids -- draft ids may change after creation; always re-list drafts for stable ids
+5. content previews are partial -- previews are the first ~5000 chars, not full content. use `read-email` for the complete message
+6. exchange sync delay -- move operations on exchange accounts need ~3 s for server sync
 
-## high-risk categories ; never auto-delete
+## id shift recovery
 
-always confirm with user or `read-email` before deleting:
+mail.app integer ids can change after exchange sync. use `--message-id` (the stable RFC 2822 header) to avoid this problem entirely:
 
-- financial: bank transactions, payment confirmations, 2FA codes
-- security: "new sign-in", "password changed", vulnerability alerts
-- shipping for expensive items, legal/government, medical
-- emails with attachments (the attachment IS the value)
-- non-English emails (especially CJK)
-- github security alerts (look identical to CI noise)
-- empty/generic subjects: "(no subject)", "Re:", "FYI"
-- unknown senders (could be a new collaborator, not cold outreach)
+- list commands (list-emails, list-recent, list-drafts) return both `id` (integer) and `message_id` (stable string) for each email
+- read, delete, move, reply, and forward commands all accept `--message-id` as the preferred identifier
+- `--id` (integer) still works as a fallback for backward compatibility
+
+if a `--message-id` lookup fails (edge case), re-list the folder:
+```bash
+.cursor/skills/apple-mail/scripts/mail.sh list-emails --account EMAIL --folder FOLDER
+```
+
+## background indexing
+
+when `--include-content` is used and some emails aren't in the index, the system:
+1. tries to find `.emlx` files on disk (instant)
+2. falls back to jxa content fetch (up to 60 s)
+3. if time runs out, spawns a background worker and returns partial results
+
+check background progress: `.cursor/skills/apple-mail/scripts/mail.sh index-status`
+cancel if needed: `.cursor/skills/apple-mail/scripts/mail.sh index-cancel`
 
 ## writing style
 

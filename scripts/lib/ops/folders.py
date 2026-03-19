@@ -10,11 +10,7 @@ def list_emails_in_folder(
     limit: int = 12,
     include_content: bool = False,
 ) -> list[dict] | dict:
-    """List emails in a specific folder from a specific account.
-
-    Returns metadata only by default (~0.3 s). When include_content=True, adds a
-    preview field with the first ~5000 chars from the search index.
-    """
+    """List emails in a specific folder from a specific account."""
     safe_email = json.dumps(account_email)
     safe_folder = json.dumps(folder_name)
     effective_limit = limit if limit else 999999
@@ -23,19 +19,20 @@ def list_emails_in_folder(
 var acct = MailCore.getAccountByEmail({safe_email});
 var mbox = MailCore.getMailbox(acct, {safe_folder});
 var folderName = mbox.name();
-var data = MailCore.fetchLimited(mbox,
-    ["id", "subject", "sender", "dateReceived", "messageId"], {effective_limit});
+var data = MailCore.batchFetch(mbox.messages, [
+    "id", "subject", "sender", "dateReceived", "messageId"
+]);
 var results = [];
-var count = data.id.length;
+var count = Math.min(data.id.length, {effective_limit});
 for (var i = 0; i < count; i++) {{
     results.push({{
         subject: data.subject[i] || "",
         id: String(data.id[i]),
+        message_id: data.messageId[i] || "",
         date_received: MailCore.formatDate(data.dateReceived[i]) || "",
         sender: data.sender[i] || "",
         account_email: {safe_email},
-        folder_name: folderName,
-        rfc_message_id: data.messageId[i] || ""
+        folder_name: folderName
     }});
 }}
 JSON.stringify(results);
