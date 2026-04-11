@@ -131,9 +131,11 @@ const MailCore = {
         }
         const ordered = inboxFirst.concat(rest);
         for (const mb of ordered) {
-            const ids = mb.messages.id();
-            const idx = ids.indexOf(targetId);
-            if (idx !== -1) return mb.messages[idx];
+            try {
+                const ids = mb.messages.id();
+                const idx = ids.indexOf(targetId);
+                if (idx !== -1) return mb.messages[idx];
+            } catch(e) {}
         }
         return null;
     },
@@ -141,8 +143,10 @@ const MailCore = {
     findMessageAcrossAccounts(targetId) {
         const accounts = Mail.accounts();
         for (const acc of accounts) {
-            const msg = MailCore.findMessageById(acc, targetId);
-            if (msg) return msg;
+            try {
+                const msg = MailCore.findMessageById(acc, targetId);
+                if (msg) return msg;
+            } catch(e) {}
         }
         return null;
     },
@@ -152,8 +156,10 @@ const MailCore = {
         for (const acc of accounts) {
             const mboxes = acc.mailboxes();
             for (const mb of mboxes) {
-                const msgs = mb.messages.whose({messageId: messageId})();
-                if (msgs.length > 0) return msgs[0];
+                try {
+                    const msgs = mb.messages.whose({messageId: messageId})();
+                    if (msgs.length > 0) return msgs[0];
+                } catch(e) {}
             }
         }
         return null;
