@@ -12,7 +12,7 @@ from .search_index.schema import PROGRESS_PATH
 
 MAIL_CORE_JS = (Path(__file__).parent / "mail_core.js").read_text()
 
-_PREVIEW_LEN = 5000
+_PREVIEW_LEN = 16000
 _JXA_BUDGET_SECONDS = 60
 _MAIL_PY = SCRIPTS_DIR / "mail.py"
 _MAIL_SH = SCRIPTS_DIR / "mail.sh"

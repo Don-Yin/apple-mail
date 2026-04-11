@@ -38,7 +38,7 @@ JSON.stringify(data);
         return []
 
 
-def list_recent_emails(most_recent_n_emails: int = 20, include_content: bool = False):
+def list_recent_emails(most_recent_n_emails: int = 128, include_content: bool = False):
     """List recent emails from all account inboxes."""
     limit = most_recent_n_emails if most_recent_n_emails is not None else 200
     script = f"""
@@ -46,6 +46,7 @@ var accounts = Mail.accounts();
 var accNames = Mail.accounts.name();
 var accEmails = Mail.accounts.emailAddresses();
 var results = [];
+var totalInbox = 0;
 var limit = {limit};
 
 for (var a = 0; a < accounts.length; a++) {{
@@ -58,6 +59,8 @@ for (var a = 0; a < accounts.length; a++) {{
         if (mboxNames[m].toLowerCase() !== "inbox") continue;
         var mbox = mboxes[m];
         var folderName = mboxNames[m];
+        var allIds = mbox.messages.id();
+        totalInbox += allIds.length;
         var data = MailCore.batchFetch(mbox.messages, [
             "id", "subject", "sender", "dateReceived", "messageId"
         ], limit);
@@ -76,12 +79,15 @@ for (var a = 0; a < accounts.length; a++) {{
         break;
     }}
 }}
-JSON.stringify(results);
+JSON.stringify({{emails: results, total_inbox: totalInbox}});
 """
     try:
-        results = run_jxa_with_core(script, timeout=60)
+        raw = run_jxa_with_core(script, timeout=60)
     except (JXAError, TimeoutError):
         return []
+
+    results = raw.get("emails", []) if isinstance(raw, dict) else raw
+    total_inbox = raw.get("total_inbox", len(results)) if isinstance(raw, dict) else len(results)
 
     # normalize folder names for consistency
     if results:
@@ -108,5 +114,12 @@ JSON.stringify(results);
         upsert_listing_hints(results)
 
     if include_content and results:
-        return enrich_with_content(results)
-    return results
+        enriched = enrich_with_content(results)
+        if isinstance(enriched, dict):
+            enriched["total_inbox"] = total_inbox
+        return enriched
+
+    output = {"emails": results, "total_inbox": total_inbox, "showing": len(results)}
+    if limit and len(results) >= limit and total_inbox > limit:
+        output["note"] = f"showing {len(results)} of {total_inbox} inbox emails. use --limit 0 to fetch all."
+    return output

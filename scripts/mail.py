@@ -728,7 +728,7 @@ def build_parser():
 
     # list-recent
     p = sub.add_parser("list-recent", help="list recent emails from all inboxes")
-    p.add_argument("--limit", type=int, default=20, help="max emails per inbox (default: 20)")
+    p.add_argument("--limit", type=int, default=128, help="max emails per inbox (default: 128)")
     p.add_argument("--include-content", action="store_true", help="add preview from search index")
 
     # list-emails
