@@ -10,6 +10,19 @@ def search_emails(query: str, scope: str = "all", account_email: str = None, lim
 
     scope="all" uses FTS5 index (~1 ms), "subject"/"sender" use JXA (~200 ms).
     """
+    # strip common prefixes and auto-map to scope
+    query_lower = query.lower().strip()
+    if scope == "all":
+        if query_lower.startswith("from:"):
+            query = query[5:].strip()
+            scope = "sender"
+        elif query_lower.startswith("subject:"):
+            query = query[8:].strip()
+            scope = "subject"
+        elif query_lower.startswith("to:"):
+            query = query[3:].strip()
+            scope = "sender"  # closest approximation
+
     if scope == "all":
         return _search_fts(query, account_email, limit)
     elif scope == "subject":

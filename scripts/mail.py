@@ -518,6 +518,14 @@ def cmd_index_cancel(args, t0):
     ))
 
 
+def cmd_index_reset(args, t0):
+    """clear stale index progress and lock files."""
+    from lib.search_index.schema import PROGRESS_PATH, LOCK_PATH
+    for p in [PROGRESS_PATH, LOCK_PATH]:
+        Path(p).unlink(missing_ok=True)
+    _output(_wrap(data={"success": True, "message": "index status reset"}, command="index-reset", start_time=t0))
+
+
 def cmd_background_index(args, t0):
     """Hidden command: fetch content for specific IDs via JXA and cache them.
 
@@ -689,8 +697,16 @@ if (msg) {{
 # ------------------------------------------------------------------
 
 
+class _JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        import json, sys
+        json.dump({"success": False, "data": None, "error": {"code": "INVALID_COMMAND", "message": message, "details": {}}, "warnings": [], "meta": {"command": "parse", "execution_time_ms": 0, "timestamp": ""}}, sys.stdout)
+        sys.stdout.write("\n")
+        sys.exit(1)
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(
+    parser = _JsonArgumentParser(
         prog="mail.py",
         description="Apple Mail CLI — agent-facing tool for reading, writing, and managing emails on macOS.",
     )
@@ -808,6 +824,9 @@ def build_parser():
     # index-cancel
     sub.add_parser("index-cancel", help="cancel background indexing")
 
+    # index-reset
+    sub.add_parser("index-reset", help="clear stale index progress/lock files")
+
     # _background-index (hidden)
     p = sub.add_parser("_background-index")
     p.add_argument("--ids", nargs="+", required=True, help=argparse.SUPPRESS)
@@ -836,6 +855,7 @@ COMMAND_MAP = {
     "build-index": cmd_build_index,
     "index-status": cmd_index_status,
     "index-cancel": cmd_index_cancel,
+    "index-reset": cmd_index_reset,
     "_background-index": cmd_background_index,
 }
 

@@ -29,7 +29,7 @@ if (r) {{
 }}
 """
     try:
-        result = run_jxa_with_core(script, timeout=120)
+        result = run_jxa_with_core(script, timeout=30)
     except (JXAError, TimeoutError):
         return None
 

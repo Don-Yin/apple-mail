@@ -98,6 +98,7 @@ for detailed parameter docs and return shapes, see `references/tool-reference.md
 4. verify draft ids -- draft ids may change after creation; always re-list drafts for stable ids
 5. content previews are partial -- previews are the first ~5000 chars, not full content. use `read-email` for the complete message
 6. exchange sync delay -- move operations on exchange accounts need ~3 s for server sync
+7. draft previews -- `--include-content` may not work for drafts on exchange accounts. use `read-email` for full draft content
 
 ## id shift recovery
 

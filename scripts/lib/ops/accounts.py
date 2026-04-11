@@ -26,7 +26,10 @@ JSON.stringify(data);
 """
     try:
         folders = run_jxa_with_core(script)
-        return sorted(folders, key=lambda x: x["folder_name"].lower())
+        folders = sorted(folders, key=lambda x: x["folder_name"].lower())
+        # hide empty system folders by default
+        folders = [f for f in folders if f.get("email_count", 0) > 0]
+        return folders
     except JXAError as e:
         if "no account found" in str(e):
             return {"success": False, "message": f"no account found for email '{account_email}'"}
@@ -79,6 +82,13 @@ JSON.stringify(results);
         results = run_jxa_with_core(script, timeout=60)
     except (JXAError, TimeoutError):
         return []
+
+    # normalize folder names for consistency
+    if results:
+        for r in results:
+            fn = r.get("folder_name", "")
+            if fn.upper() == "INBOX":
+                r["folder_name"] = "Inbox"
 
     # deduplicate by rfc message_id (Exchange sync can create multiple int_ids for same email)
     if results:

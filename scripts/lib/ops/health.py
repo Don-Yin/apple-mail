@@ -13,7 +13,7 @@ def health_check() -> dict:
     try:
         result = run_applescript(applescript, timeout=5)
         if "OK" in result.stdout:
-            return {"success": True, "message": "apple mail is responding correctly"}
+            return {"message": "apple mail is responding correctly"}
         else:
             return {"success": False, "message": "apple mail not responding properly"}
     except (TimeoutError, RuntimeError) as e:

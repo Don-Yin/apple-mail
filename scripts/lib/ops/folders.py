@@ -26,11 +26,11 @@ var results = [];
 var count = data.id.length;
 for (var i = 0; i < count; i++) {{
     results.push({{
-        subject: data.subject[i] || "",
         id: String(data.id[i]),
         message_id: data.messageId[i] || "",
-        date_received: MailCore.formatDate(data.dateReceived[i]) || "",
+        subject: data.subject[i] || "",
         sender: data.sender[i] || "",
+        date_received: MailCore.formatDate(data.dateReceived[i]) || "",
         account_email: {safe_email},
         folder_name: folderName
     }});

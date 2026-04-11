@@ -516,7 +516,7 @@ JSON.stringify(m);
                 "date_received": row[6] or "",
                 "account_email": acc,
                 "folder_name": row[2] or "",
-                "snippet": snippet,
+                "preview": snippet,
                 "score": round(row[8], 3),
             })
         return results
