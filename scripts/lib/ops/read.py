@@ -14,17 +14,13 @@ _CONTENT_JXA_TIMEOUT = 10
 _METADATA_JXA_TIMEOUT = 15
 
 
-def read_full_email(identifier: str, by_message_id: bool = False) -> dict:
+def read_full_email(identifier: str) -> dict:
     """Get full email content including all details and attachments."""
-    if by_message_id:
-        result = _fetch_metadata_by_mid(identifier)
-        eid_for_content = None
-    else:
-        try:
-            eid_for_content = int(identifier.strip())
-        except ValueError as e:
-            return {"success": False, "message": f"invalid email id: {e}"}
-        result = _fetch_metadata(eid_for_content)
+    try:
+        eid_for_content = int(identifier.strip())
+    except ValueError as e:
+        return {"success": False, "message": f"invalid email id: {e}"}
+    result = _fetch_metadata(eid_for_content)
 
     if result is None:
         return {"success": False, "message": f"email with id {identifier} not found"}
@@ -95,6 +91,7 @@ if (!msg) {{
     JSON.stringify({{
         found: true,
         id: String(msg.id()),
+        message_id: msg.messageId() || "",
         subject: msg.subject() || "",
         sender: msg.sender() || "",
         date_received: MailCore.formatDate(msg.dateReceived()),
@@ -116,24 +113,6 @@ def _fetch_metadata(eid: int) -> dict | None:
     """Phase 1: fetch everything except content() by integer id."""
     script = f"var targetId = {eid};\n" + _build_metadata_jxa(
         "MailCore.findMessageAcrossAccounts(targetId)"
-    )
-    try:
-        result = run_jxa_with_core(script, timeout=_METADATA_JXA_TIMEOUT)
-    except (TimeoutError, JXAError):
-        return None
-
-    if not result or not result.get("found"):
-        return None
-
-    result.pop("found", None)
-    return result
-
-
-def _fetch_metadata_by_mid(message_id: str) -> dict | None:
-    """Phase 1: fetch everything except content() by RFC 2822 message-id."""
-    safe_mid = message_id.replace("\\", "\\\\").replace('"', '\\"')
-    script = f'var targetMid = "{safe_mid}";\n' + _build_metadata_jxa(
-        "MailCore.findMessageByMessageId(targetMid)"
     )
     try:
         result = run_jxa_with_core(script, timeout=_METADATA_JXA_TIMEOUT)
@@ -187,12 +166,9 @@ def _try_search_index(eid: int, metadata: dict) -> str:
     try:
         from ..search_index import SearchIndexManager
 
-        mgr = SearchIndexManager()
-        try:
+        with SearchIndexManager() as mgr:
             content_map = mgr.batch_content([eid], [metadata])
             return content_map.get(eid, "")
-        finally:
-            mgr.close()
     except Exception:
         return ""
 
@@ -202,12 +178,9 @@ def _try_disk_emlx(eid: int) -> str:
     try:
         from ..search_index import SearchIndexManager
 
-        mgr = SearchIndexManager()
-        try:
+        with SearchIndexManager() as mgr:
             content_map = mgr.targeted_index({eid})
             return content_map.get(eid, "")
-        finally:
-            mgr.close()
     except Exception:
         return ""
 
@@ -221,18 +194,22 @@ def _cache_on_read(result: dict):
     try:
         from ..search_index import SearchIndexManager
 
-        mgr = SearchIndexManager()
-        try:
+        with SearchIndexManager() as mgr:
+            message_id = int(result["id"])
+            account = result.get("account_email", "")
+            mailbox = result.get("folder_name", "")
+            rfc_mid = result.get("message_id", "")
             mgr.cache_content(
-                message_id=int(result["id"]),
+                message_id=message_id,
                 subject=result.get("subject", ""),
                 sender=result.get("sender", ""),
                 content=content,
                 date_received=result.get("date_received", ""),
-                account=result.get("account_email", ""),
-                mailbox=result.get("folder_name", ""),
+                account=account,
+                mailbox=mailbox,
+                rfc_message_id=rfc_mid or None,
             )
-        finally:
-            mgr.close()
+            if rfc_mid:
+                mgr.upsert_hints([(rfc_mid, message_id, account, mailbox)])
     except Exception:
         pass

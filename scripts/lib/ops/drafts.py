@@ -354,25 +354,10 @@ def send_draft(draft_id: str) -> dict:
 # ------------------------------------------------------------------
 
 
-def _build_find_email_block(identifier: str, by_message_id: bool) -> str:
-    """Build the AppleScript find-email block for reply/forward operations."""
-    if by_message_id:
-        escaped_mid = escape_applescript(identifier)
-        return f"""
-            repeat with acc in accounts
-                repeat with mbox in mailboxes of acc
-                    set msgList to (messages of mbox whose message id is "{escaped_mid}")
-                    if (count of msgList) > 0 then
-                        set foundEmail to item 1 of msgList
-                        set foundAccount to acc
-                        exit repeat
-                    end if
-                end repeat
-                if foundEmail is not missing value then exit repeat
-            end repeat
-"""
+def _build_find_email_block(email_id: str) -> str:
+    """Applescript block to find an email by integer id, inbox-first."""
     return f"""
-            set targetId to {identifier} as integer
+            set targetId to {email_id} as integer
 
             repeat with acc in accounts
                 repeat with mbox in mailboxes of acc
@@ -414,14 +399,12 @@ def reply_draft(
     extra_cc: list[str] = None,
     extra_bcc: list[str] = None,
     extra_attachments: list[str] = None,
-    by_message_id: bool = False,
 ) -> dict:
     """Draft a reply to an original email and leave it as a draft."""
-    if not by_message_id:
-        try:
-            original_email_id = validate_id(original_email_id, "email_id")
-        except ValueError as e:
-            return {"success": False, "message": str(e)}
+    try:
+        original_email_id = validate_id(original_email_id, "email_id")
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
 
     extra_cc = extra_cc or []
     extra_bcc = extra_bcc or []
@@ -453,7 +436,7 @@ def reply_draft(
             end repeat
             """
 
-    find_block = _build_find_email_block(original_email_id, by_message_id)
+    find_block = _build_find_email_block(original_email_id)
 
     script = textwrap.dedent(
         f"""

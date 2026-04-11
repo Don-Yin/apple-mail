@@ -12,22 +12,8 @@ from ..applescript import (
 )
 
 
-def _build_find_block(identifier: str, by_message_id: bool) -> str:
-    """Build AppleScript block to find an email for forwarding."""
-    if by_message_id:
-        escaped_mid = escape_applescript(identifier)
-        return f"""
-            repeat with acc in accounts
-                repeat with mbox in mailboxes of acc
-                    set msgList to (messages of mbox whose message id is "{escaped_mid}")
-                    if (count of msgList) > 0 then
-                        set foundEmail to item 1 of msgList
-                        exit repeat
-                    end if
-                end repeat
-                if foundEmail is not missing value then exit repeat
-            end repeat
-"""
+def _build_find_block(identifier: str) -> str:
+    """build applescript block to find an email by integer id for forwarding."""
     return f"""
             set targetId to {identifier} as integer
 
@@ -70,14 +56,12 @@ def make_forward_draft(
     cc: list[str] = None,
     bcc: list[str] = None,
     new_attachments: list[str] = None,
-    by_message_id: bool = False,
 ) -> dict:
-    """Create a forward draft from an existing email."""
-    if not by_message_id:
-        try:
-            email_id = validate_id(email_id, "email_id")
-        except ValueError as e:
-            return {"success": False, "message": str(e)}
+    """create a forward draft from an existing email."""
+    try:
+        email_id = validate_id(email_id, "email_id")
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
 
     cc = cc or []
     bcc = bcc or []
@@ -98,7 +82,7 @@ def make_forward_draft(
     bcc_section = build_recipients(bcc, "bcc", "newMessage")
     attachment_section = build_attachments(attachment_paths, "newMessage")
 
-    find_block = _build_find_block(email_id, by_message_id)
+    find_block = _build_find_block(email_id)
 
     script = textwrap.dedent(
         f"""

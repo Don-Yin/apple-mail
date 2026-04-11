@@ -13,7 +13,7 @@ def list_emails_in_folder(
     """List emails in a specific folder from a specific account."""
     safe_email = json.dumps(account_email)
     safe_folder = json.dumps(folder_name)
-    effective_limit = limit if limit else 999999
+    effective_limit = limit or 200
 
     script = f"""
 var acct = MailCore.getAccountByEmail({safe_email});
@@ -21,9 +21,9 @@ var mbox = MailCore.getMailbox(acct, {safe_folder});
 var folderName = mbox.name();
 var data = MailCore.batchFetch(mbox.messages, [
     "id", "subject", "sender", "dateReceived", "messageId"
-]);
+], {effective_limit});
 var results = [];
-var count = Math.min(data.id.length, {effective_limit});
+var count = data.id.length;
 for (var i = 0; i < count; i++) {{
     results.push({{
         subject: data.subject[i] || "",
@@ -41,6 +41,10 @@ JSON.stringify(results);
         results = run_jxa_with_core(script, timeout=60)
     except (JXAError, TimeoutError):
         return []
+
+    if results:
+        from ..resolve import upsert_listing_hints
+        upsert_listing_hints(results)
 
     if include_content and results:
         return enrich_with_content(results)

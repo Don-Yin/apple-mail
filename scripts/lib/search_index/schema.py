@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .. import ASSETS_DIR
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DB_PATH = ASSETS_DIR / "index.db"
 PROGRESS_PATH = ASSETS_DIR / "index-progress.json"
@@ -17,8 +17,8 @@ LOGS_DIR = ASSETS_DIR / "logs"
 FTS5_SPECIAL_CHARS = re.compile(r'(["\'\-\*\(\)\:\^])')
 
 INSERT_EMAIL_SQL = """INSERT OR REPLACE INTO emails
-    (message_id, account, mailbox, subject, sender, content, date_received, emlx_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
+    (message_id, account, mailbox, subject, sender, content, date_received, emlx_path, rfc_message_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS emails (
     content TEXT,
     date_received TEXT,
     emlx_path TEXT,
+    rfc_message_id TEXT,
     indexed_at TEXT DEFAULT (datetime('now')),
     UNIQUE(account, mailbox, message_id)
 );
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS emails (
 CREATE INDEX IF NOT EXISTS idx_emails_account_mailbox ON emails(account, mailbox);
 CREATE INDEX IF NOT EXISTS idx_emails_date ON emails(date_received DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_subject_date ON emails(subject, date_received);
+CREATE INDEX IF NOT EXISTS idx_emails_rfc_mid ON emails(rfc_message_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(
     subject, sender, content,
@@ -103,6 +105,12 @@ def init_database(db_path: Path | None = None) -> sqlite3.Connection:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_emails_subject_date ON emails(subject, date_received)"
             )
+            if row[0] < 4:
+                try:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc_message_id TEXT")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_rfc_mid ON emails(rfc_message_id)")
             conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
             conn.commit()
 

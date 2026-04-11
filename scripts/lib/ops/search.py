@@ -25,11 +25,10 @@ def build_search_index() -> dict:
 
     Requires Full Disk Access for Terminal.
     """
+    mgr = SearchIndexManager()
     try:
-        mgr = SearchIndexManager()
         result = mgr.build_from_disk()
         stats = mgr.get_stats()
-        mgr.close()
         return {
             "success": True,
             **result,
@@ -41,6 +40,8 @@ def build_search_index() -> dict:
         return {"success": False, "error": str(e)}
     except Exception as e:
         return {"success": False, "error": f"index build failed: {e}"}
+    finally:
+        mgr.close()
 
 
 def _search_fts(query: str, account_email: str | None, limit: int) -> list[dict]:

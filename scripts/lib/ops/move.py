@@ -1,73 +1,39 @@
 """Email move operation."""
 
 import textwrap
-from ..applescript import validate_id, escape_applescript, run_applescript, sync_mail_state
+from ..applescript import validate_id, escape_applescript, run_applescript, sync_mail_state, build_find_by_int_block
 
 
-def _build_find_by_mid_block(message_id: str) -> str:
-    """Build AppleScript block to find email by RFC 2822 message-id, inbox first."""
-    escaped_mid = escape_applescript(message_id)
-    return f"""
-            -- inbox first (fast path)
-            set msgList to (messages of inbox whose message id is "{escaped_mid}")
-            if (count of msgList) > 0 then
-                set foundMessage to item 1 of msgList
-                repeat with acc in accounts
-                    if (inbox of acc) is (mailbox of foundMessage) then
-                        set sourceAccount to acc
-                        exit repeat
-                    end if
-                end repeat
-            end if
-
-            if foundMessage is missing value then
-                repeat with acc in accounts
-                    repeat with mbox in mailboxes of acc
-                        set msgList to (messages of mbox whose message id is "{escaped_mid}")
-                        if (count of msgList) > 0 then
-                            set foundMessage to item 1 of msgList
-                            set sourceAccount to acc
-                            exit repeat
-                        end if
-                    end repeat
-                    if foundMessage is not missing value then exit repeat
-                end repeat
-            end if
-"""
-
-
-def _build_find_by_int_block(email_id: str) -> str:
-    """Build AppleScript block to find email by integer id."""
-    return f"""
-            set targetId to {email_id} as integer
-            repeat with acc in accounts
-                repeat with mbox in mailboxes of acc
-                    set msgList to (messages of mbox whose id is targetId)
-                    if (count of msgList) > 0 then
-                        set foundMessage to item 1 of msgList
-                        set sourceAccount to acc
-                        exit repeat
-                    end if
-                end repeat
-                if foundMessage is not missing value then exit repeat
-            end repeat
-"""
-
-
-def move_email(identifier: str, to_folder: str, by_message_id: bool = False, delay_seconds: int = 3) -> dict:
-    """Move an email to a specific folder, searching recursively across accounts."""
-    if not by_message_id:
-        try:
-            identifier = validate_id(identifier, "email_id")
-        except ValueError as e:
-            return {"success": False, "message": str(e)}
+def move_email(identifier: str, to_folder: str, to_account: str = None) -> dict:
+    """move an email to a specific folder, optionally across accounts."""
+    try:
+        identifier = validate_id(identifier, "email_id")
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
 
     folder_escaped = escape_applescript(to_folder)
+    find_block = build_find_by_int_block(identifier)
 
-    if by_message_id:
-        find_block = _build_find_by_mid_block(identifier)
+    if to_account:
+        dest_escaped = escape_applescript(to_account)
+        dest_account_block = f"""
+            set destAccount to missing value
+            set targetEmail to "{dest_escaped}"
+            repeat with acc in accounts
+                set accEmails to email addresses of acc
+                repeat with addr in accEmails
+                    if (contents of addr) is targetEmail then
+                        set destAccount to acc
+                        exit repeat
+                    end if
+                end repeat
+                if destAccount is not missing value then exit repeat
+            end repeat
+            if destAccount is missing value then
+                return "DEST_ACCOUNT_NOT_FOUND"
+            end if"""
     else:
-        find_block = _build_find_by_int_block(identifier)
+        dest_account_block = "set destAccount to sourceAccount"
 
     script = textwrap.dedent(
         f"""
@@ -80,21 +46,23 @@ def move_email(identifier: str, to_folder: str, by_message_id: bool = False, del
                 return "EMAIL_NOT_FOUND"
             end if
 
+            {dest_account_block}
+
             set targetMailbox to missing value
-            set mailboxQueue to mailboxes of sourceAccount
+            set mailboxQueue to mailboxes of destAccount
 
             repeat while (count of mailboxQueue) > 0
                 set currentMbox to item 1 of mailboxQueue
 
-                ignoring case
-                    set folderMatch to ((name of currentMbox) is "{folder_escaped}")
-                end ignoring
-                if folderMatch then
-                    set targetMailbox to currentMbox
-                    exit repeat
-                end if
-
                 try
+                    ignoring case
+                        set folderMatch to ((name of currentMbox) is "{folder_escaped}")
+                    end ignoring
+                    if folderMatch then
+                        set targetMailbox to currentMbox
+                        exit repeat
+                    end if
+
                     set subMailboxes to mailboxes of currentMbox
                     repeat with subMbox in subMailboxes
                         set end of mailboxQueue to subMbox
@@ -108,17 +76,8 @@ def move_email(identifier: str, to_folder: str, by_message_id: bool = False, del
                 return "FOLDER_NOT_FOUND"
             end if
 
-            set sourceMbox to mailbox of foundMessage
-            set movedId to id of foundMessage
             move foundMessage to targetMailbox
-            delay {delay_seconds}
-
-            set stillInSource to (messages of sourceMbox whose id is movedId)
-            if (count of stillInSource) is 0 then
-                return "SUCCESS"
-            else
-                return "MOVE_FAILED"
-            end if
+            return "SUCCESS"
         end tell
         """
     )
@@ -135,12 +94,14 @@ def move_email(identifier: str, to_folder: str, by_message_id: bool = False, del
     match output:
         case "EMAIL_NOT_FOUND":
             return {"success": False, "message": f"email with id {identifier} not found"}
+        case "DEST_ACCOUNT_NOT_FOUND":
+            return {"success": False, "message": f"no account found for email '{to_account}'"}
         case "FOLDER_NOT_FOUND":
-            return {"success": False, "message": f"folder '{to_folder}' not found. note: custom folders must be synced with exchange server"}
-        case "MOVE_FAILED":
-            return {"success": False, "message": f"move command executed but email did not appear in '{to_folder}'. folder may not be synced with exchange server"}
+            dest = f" (searched {to_account})" if to_account else ""
+            return {"success": False, "message": f"folder '{to_folder}' not found{dest}"}
         case "SUCCESS":
             sync_mail_state(delay_seconds=1.0)
-            return {"success": True, "message": f"email moved to {to_folder} successfully"}
+            dest = f"{to_account}/{to_folder}" if to_account else to_folder
+            return {"success": True, "message": f"email moved to {dest} successfully"}
         case _:
             return {"success": False, "message": f"unexpected output: {output}"}

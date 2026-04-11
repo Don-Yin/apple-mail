@@ -1,7 +1,7 @@
 """Email and draft deletion operations."""
 
 import textwrap
-from ..applescript import validate_id, escape_applescript, run_applescript, sync_mail_state
+from ..applescript import validate_id, run_applescript, sync_mail_state
 
 
 def delete_draft(draft_id: str) -> dict:
@@ -60,45 +60,6 @@ def delete_draft(draft_id: str) -> dict:
     return {"success": False, "message": f"unexpected output: {output}"}
 
 
-def _build_delete_by_mid_script(message_id: str) -> str:
-    """Build AppleScript to delete an email by RFC 2822 message-id."""
-    escaped_mid = escape_applescript(message_id)
-    return textwrap.dedent(
-        f"""
-        tell application "Mail"
-            set foundMessage to missing value
-
-            -- phase 1: search inbox first (fast path)
-            set msgList to (messages of inbox whose message id is "{escaped_mid}")
-            if (count of msgList) > 0 then
-                set foundMessage to item 1 of msgList
-            end if
-
-            if foundMessage is missing value then
-                -- phase 2: search all folders
-                repeat with acc in accounts
-                    repeat with mbox in mailboxes of acc
-                        set msgList to (messages of mbox whose message id is "{escaped_mid}")
-                        if (count of msgList) > 0 then
-                            set foundMessage to item 1 of msgList
-                            exit repeat
-                        end if
-                    end repeat
-                    if foundMessage is not missing value then exit repeat
-                end repeat
-            end if
-
-            if foundMessage is missing value then
-                return "EMAIL_NOT_FOUND"
-            end if
-
-            delete foundMessage
-            return "SUCCESS"
-        end tell
-        """
-    )
-
-
 def _build_delete_by_int_script(email_id: str) -> str:
     """Build AppleScript to delete an email by integer id (inbox first, then all)."""
     return textwrap.dedent(
@@ -149,16 +110,13 @@ def _build_delete_by_int_script(email_id: str) -> str:
     )
 
 
-def delete_email(identifier: str, by_message_id: bool = False) -> dict:
+def delete_email(identifier: str) -> dict:
     """Delete any email by its ID across all accounts and folders."""
-    if by_message_id:
-        script = _build_delete_by_mid_script(identifier)
-    else:
-        try:
-            identifier = validate_id(identifier)
-        except ValueError as e:
-            return {"success": False, "message": str(e)}
-        script = _build_delete_by_int_script(identifier)
+    try:
+        identifier = validate_id(identifier)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    script = _build_delete_by_int_script(identifier)
 
     try:
         result = run_applescript(script)
@@ -175,59 +133,6 @@ def delete_email(identifier: str, by_message_id: bool = False) -> dict:
         sync_mail_state()
         return {"success": True, "message": "email deleted successfully"}
     return {"success": False, "message": f"unexpected output: {output}"}
-
-
-def _build_batch_delete_by_mid_script(message_ids: list[str]) -> str:
-    """Build AppleScript to batch-delete emails by RFC 2822 message-ids."""
-    mid_items = [f'"{escape_applescript(mid)}"' for mid in message_ids]
-    mids_literal = ", ".join(mid_items)
-
-    return textwrap.dedent(
-        f"""
-        tell application "Mail"
-            set targetMids to {{{mids_literal}}}
-            set deletedCount to 0
-            set notFoundMids to {{}}
-
-            repeat with tmid in targetMids
-                set foundMessage to missing value
-
-                -- inbox first (fast path)
-                set msgList to (messages of inbox whose message id is tmid)
-                if (count of msgList) > 0 then
-                    set foundMessage to item 1 of msgList
-                end if
-
-                if foundMessage is missing value then
-                    repeat with acc in accounts
-                        repeat with mbox in mailboxes of acc
-                            set msgList to (messages of mbox whose message id is tmid)
-                            if (count of msgList) > 0 then
-                                set foundMessage to item 1 of msgList
-                                exit repeat
-                            end if
-                        end repeat
-                        if foundMessage is not missing value then exit repeat
-                    end repeat
-                end if
-
-                if foundMessage is not missing value then
-                    delete foundMessage
-                    set deletedCount to deletedCount + 1
-                else
-                    set end of notFoundMids to (tmid as string)
-                end if
-            end repeat
-
-            set oldDelimiters to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to ","
-            set notFoundStr to notFoundMids as string
-            set AppleScript's text item delimiters to oldDelimiters
-
-            return (deletedCount as string) & "|||" & notFoundStr
-        end tell
-        """
-    )
 
 
 def _build_batch_delete_by_int_script(email_ids: list[str]) -> str:
@@ -306,22 +211,16 @@ def _build_batch_delete_by_int_script(email_ids: list[str]) -> str:
     )
 
 
-def delete_emails_batch(identifiers: list[str], by_message_id: bool = False) -> dict:
+def delete_emails_batch(identifiers: list[str]) -> dict:
     """Delete multiple emails in a single AppleScript call."""
-    if by_message_id:
-        if not identifiers:
-            return {"success": False, "message": "no message ids provided", "deleted": 0, "requested": 0, "not_found": []}
-        script = _build_batch_delete_by_mid_script(identifiers)
-        count = len(identifiers)
-    else:
-        try:
-            validated = [validate_id(eid) for eid in identifiers]
-        except ValueError as e:
-            return {"success": False, "message": str(e)}
-        if not validated:
-            return {"success": False, "message": "no email ids provided", "deleted": 0, "requested": 0, "not_found": []}
-        script = _build_batch_delete_by_int_script(validated)
-        count = len(validated)
+    try:
+        validated = [validate_id(eid) for eid in identifiers]
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+    if not validated:
+        return {"success": False, "message": "no email ids provided", "deleted": 0, "requested": 0, "not_found": []}
+    script = _build_batch_delete_by_int_script(validated)
+    count = len(validated)
 
     try:
         result = run_applescript(script)

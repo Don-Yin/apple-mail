@@ -7,8 +7,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import ASSETS_DIR, SCRIPTS_DIR, relative_time
-from .search_index.schema import PROGRESS_PATH, LOCK_PATH
+from . import ASSETS_DIR, SCRIPTS_DIR
+from .search_index.schema import PROGRESS_PATH
 
 MAIL_CORE_JS = (Path(__file__).parent / "mail_core.js").read_text()
 
@@ -151,8 +151,8 @@ def _build_wrapper(
         },
         "index_age": mgr.get_index_age(),
         "note": (
-        "Previews are first ~5000 chars only (not full content). "
-        "Use read-email for complete content."
+            "Previews are first ~5000 chars only (not full content). "
+            "Use read-email for complete content."
         ),
     }
 
@@ -167,11 +167,7 @@ def _build_wrapper(
 def _jxa_fetch_with_budget(
     messages: list[dict], mgr, budget: float = _JXA_BUDGET_SECONDS
 ) -> dict[int, str]:
-    """Fetch content via JXA for messages not in index, within time budget.
-
-    Uses account/folder context from message metadata when available to avoid
-    scanning all accounts and all mailboxes for each message.
-    """
+    """Fetch content via JXA for messages not in index, within time budget."""
     fetched: dict[int, str] = {}
     start = time.monotonic()
 
@@ -180,32 +176,7 @@ def _jxa_fetch_with_budget(
             break
 
         msg_id = int(msg["id"])
-        account_email = msg.get("account_email", "")
-        folder_name = msg.get("folder_name", "")
-
-        if account_email and folder_name:
-            safe_email = json.dumps(account_email)
-            safe_folder = json.dumps(folder_name)
-            script = f"""
-var msg = null;
-try {{
-    var acct = MailCore.getAccountByEmail({safe_email});
-    var mbox = MailCore.getMailbox(acct, {safe_folder});
-    var ids = mbox.messages.id();
-    var idx = ids.indexOf({msg_id});
-    if (idx !== -1) msg = mbox.messages[idx];
-    else msg = MailCore.findMessageById(acct, {msg_id});
-}} catch(e) {{
-    msg = MailCore.findMessageAcrossAccounts({msg_id});
-}}
-if (msg) {{
-    var content = "";
-    try {{ content = msg.content() || ""; }} catch(e) {{}}
-    JSON.stringify({{id: {msg_id}, content: content}});
-}} else {{
-    JSON.stringify({{id: {msg_id}, content: ""}});
-}}"""
-        else:
+        try:
             script = f"""
 var msg = MailCore.findMessageAcrossAccounts({msg_id});
 if (msg) {{
@@ -215,7 +186,6 @@ if (msg) {{
 }} else {{
     JSON.stringify({{id: {msg_id}, content: ""}});
 }}"""
-        try:
             result = run_jxa_with_core(script, timeout=15)
             if result and result.get("content"):
                 content = result["content"]
@@ -225,8 +195,9 @@ if (msg) {{
                     sender=msg.get("sender", ""),
                     content=content,
                     date_received=msg.get("date_received", ""),
-                    account=account_email,
-                    mailbox=folder_name,
+                    account=msg.get("account_email", ""),
+                    mailbox=msg.get("folder_name", ""),
+                    rfc_message_id=msg.get("message_id") or None,
                 )
                 fetched[msg_id] = content
         except Exception:
@@ -257,6 +228,10 @@ def _spawn_background_indexer(msg_ids: list[int]) -> bool:
     id_args = [str(i) for i in msg_ids]
     log_dir = ASSETS_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    logs = sorted(log_dir.glob("background-index-*.log"), key=lambda p: p.stat().st_mtime)
+    for stale in logs[:-10]:
+        stale.unlink(missing_ok=True)
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"background-index-{timestamp}.log"

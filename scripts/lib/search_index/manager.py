@@ -35,6 +35,12 @@ class SearchIndexManager:
             self._conn.close()
             self._conn = None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
     def has_index(self) -> bool:
         return self._db_path.exists()
 
@@ -76,6 +82,7 @@ class SearchIndexManager:
                     em.get("content", ""),
                     em.get("date_received", ""),
                     em.get("emlx_path", ""),
+                    None,
                 ))
 
                 if len(batch) >= batch_size:
@@ -169,6 +176,7 @@ class SearchIndexManager:
                             parsed.get("content", ""),
                             parsed.get("date_received", ""),
                             str(emlx_path),
+                            None,
                         ))
                     break
 
@@ -188,6 +196,52 @@ class SearchIndexManager:
         conn.commit()
 
         return {"added": added, "removed": removed}
+
+    # ------------------------------------------------------------------
+    # message-id resolution hints
+    # ------------------------------------------------------------------
+
+    def upsert_hints(self, hints: list[tuple[str, int, str, str]]):
+        """batch upsert (rfc_message_id, int_id, account, mailbox) location hints."""
+        if not hints:
+            return
+        conn = self._get_conn()
+        for rfc, mid, acc, mbox in hints:
+            existing = conn.execute(
+                "SELECT rowid FROM emails WHERE rfc_message_id = ?", (rfc,)
+            ).fetchone()
+            if existing:
+                collision = conn.execute(
+                    "SELECT 1 FROM emails WHERE account = ? AND mailbox = ? AND message_id = ? AND rowid != ?",
+                    (acc, mbox, mid, existing[0]),
+                ).fetchone()
+                if not collision:
+                    conn.execute(
+                        "UPDATE emails SET message_id = ?, account = ?, mailbox = ? WHERE rowid = ?",
+                        (mid, acc, mbox, existing[0]),
+                    )
+            else:
+                backfilled = conn.execute(
+                    "UPDATE emails SET rfc_message_id = ? WHERE message_id = ? AND account = ? AND mailbox = ? AND rfc_message_id IS NULL",
+                    (rfc, mid, acc, mbox),
+                ).rowcount
+                if not backfilled:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO emails (message_id, account, mailbox, rfc_message_id) VALUES (?,?,?,?)",
+                        (mid, acc, mbox, rfc),
+                    )
+        conn.commit()
+
+    def get_hint(self, rfc_message_id: str) -> dict | None:
+        """lookup cached location for an rfc message-id."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT message_id, account, mailbox FROM emails WHERE rfc_message_id = ? LIMIT 1",
+            (rfc_message_id,),
+        ).fetchone()
+        if row:
+            return {"int_id": row[0], "account": row[1], "mailbox": row[2]}
+        return None
 
     # ------------------------------------------------------------------
     # Content retrieval with ID-shift self-healing
@@ -245,11 +299,17 @@ class SearchIndexManager:
 
             if row and row[2]:
                 result[mid] = row[2]
-                conn.execute(
-                    "UPDATE emails SET message_id = ? WHERE rowid = ?",
-                    (mid, row[0]),
-                )
-                healed = True
+                collision = conn.execute(
+                    "SELECT 1 FROM emails WHERE message_id = ? AND account = (SELECT account FROM emails WHERE rowid = ?) "
+                    "AND mailbox = (SELECT mailbox FROM emails WHERE rowid = ?) AND rowid != ?",
+                    (mid, row[0], row[0], row[0]),
+                ).fetchone()
+                if not collision:
+                    conn.execute(
+                        "UPDATE emails SET message_id = ? WHERE rowid = ?",
+                        (mid, row[0]),
+                    )
+                    healed = True
 
         if healed:
             conn.commit()
@@ -287,6 +347,7 @@ class SearchIndexManager:
                             parsed.get("content", ""),
                             parsed.get("date_received", ""),
                             str(emlx_path),
+                            None,
                         ),
                     )
                     found[msg_id] = parsed["content"]
@@ -306,6 +367,7 @@ class SearchIndexManager:
         date_received: str,
         account: str = "",
         mailbox: str = "",
+        rfc_message_id: str = None,
     ):
         """Cache content for a single email with deduplication.
 
@@ -328,14 +390,14 @@ class SearchIndexManager:
 
         if existing:
             conn.execute(
-                "UPDATE emails SET message_id = ?, content = ?, sender = ?, "
+                "UPDATE emails SET message_id = ?, content = ?, sender = ?, rfc_message_id = COALESCE(?, rfc_message_id), "
                 "indexed_at = datetime('now') WHERE rowid = ?",
-                (message_id, content, sender, existing[0]),
+                (message_id, content, sender, rfc_message_id, existing[0]),
             )
         else:
             conn.execute(
                 INSERT_EMAIL_SQL,
-                (message_id, account, mailbox, subject, sender, content, date_received, ""),
+                (message_id, account, mailbox, subject, sender, content, date_received, "", rfc_message_id),
             )
 
         conn.commit()

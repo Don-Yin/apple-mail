@@ -46,13 +46,13 @@ def _output(result: dict):
 def _infer_error_code(message: str) -> str:
     """Map common operation failure messages to standard error codes."""
     msg = message.lower()
+    if "no account found" in msg or ("account" in msg and "not found" in msg):
+        return "ACCOUNT_NOT_FOUND"
+    if "folder" in msg and "not found" in msg:
+        return "FOLDER_NOT_FOUND"
+    if "draft" in msg and "not found" in msg:
+        return "DRAFT_NOT_FOUND"
     if "not found" in msg:
-        if "draft" in msg:
-            return "DRAFT_NOT_FOUND"
-        if "account" in msg:
-            return "ACCOUNT_NOT_FOUND"
-        if "folder" in msg:
-            return "FOLDER_NOT_FOUND"
         return "EMAIL_NOT_FOUND"
     if "invalid" in msg and "id" in msg:
         return "INVALID_ID"
@@ -84,42 +84,58 @@ def _output_op(result: dict, command: str, t0):
 # ------------------------------------------------------------------
 
 
-def _resolve_id_or_message_id(args, command: str, t0) -> tuple:
-    """Return (identifier, by_message_id) from --id/--message-id args.
+def _resolve_mid(message_id: str) -> dict | None:
+    """resolve rfc message-id to current int_id via 3-tier cache."""
+    from lib.resolve import resolve_message
+    return resolve_message(message_id)
 
-    Emits an error response and returns (None, False) when neither is provided.
-    """
+
+def _resolve_id_or_message_id(args, command: str, t0) -> str | None:
+    """return a resolved integer id from --id or --message-id, or None on failure."""
     mid = getattr(args, "message_id", None)
     iid = getattr(args, "id", None)
     if mid:
-        return mid, True
+        resolved = _resolve_mid(mid)
+        if resolved:
+            return resolved["id"]
+        _output(_wrap(
+            error=_error("EMAIL_NOT_FOUND", f"no email found with message-id '{mid[:50]}...'"),
+            command=command, start_time=t0,
+        ))
+        return None
     if iid:
-        return iid, False
+        return iid
     _output(_wrap(
         error=_error("MISSING_ID", "provide either --id or --message-id"),
-        command=command,
-        start_time=t0,
+        command=command, start_time=t0,
     ))
-    return None, False
+    return None
 
 
-def _resolve_ids_or_message_ids(args, command: str, t0) -> tuple:
-    """Return (identifiers_list, by_message_id) from --ids/--message-ids args.
-
-    Emits an error response and returns (None, False) when neither is provided.
-    """
+def _resolve_ids_or_message_ids(args, command: str, t0) -> list[str] | None:
+    """return resolved integer id list from --ids or --message-ids, or None on failure."""
     mids = getattr(args, "message_ids", None)
     iids = getattr(args, "ids", None)
     if mids:
-        return mids, True
+        resolved = []
+        for mid in mids:
+            r = _resolve_mid(mid)
+            if r:
+                resolved.append(r["id"])
+            else:
+                _output(_wrap(
+                    error=_error("EMAIL_NOT_FOUND", f"no email found with message-id '{mid[:50]}...'"),
+                    command=command, start_time=t0,
+                ))
+                return None
+        return resolved
     if iids:
-        return iids, False
+        return iids
     _output(_wrap(
         error=_error("MISSING_ID", "provide either --ids or --message-ids"),
-        command=command,
-        start_time=t0,
+        command=command, start_time=t0,
     ))
-    return None, False
+    return None
 
 
 # ------------------------------------------------------------------
@@ -193,11 +209,11 @@ def cmd_list_drafts(args, t0):
 def cmd_read_email(args, t0):
     from lib.ops.read import read_full_email
 
-    identifier, by_mid = _resolve_id_or_message_id(args, "read-email", t0)
+    identifier = _resolve_id_or_message_id(args, "read-email", t0)
     if identifier is None:
         return
 
-    result = read_full_email(identifier, by_message_id=by_mid)
+    result = read_full_email(identifier)
     if isinstance(result, dict) and result.get("success") is False:
         mail_sh = str(Path(__file__).resolve().parent / "mail.sh")
         msg = result.get("message", "email not found")
@@ -284,7 +300,7 @@ def cmd_send_draft(args, t0):
 def cmd_reply_draft(args, t0):
     from lib.ops.drafts import reply_draft
 
-    identifier, by_mid = _resolve_id_or_message_id(args, "reply-draft", t0)
+    identifier = _resolve_id_or_message_id(args, "reply-draft", t0)
     if identifier is None:
         return
 
@@ -295,7 +311,6 @@ def cmd_reply_draft(args, t0):
         extra_cc=args.cc,
         extra_bcc=args.bcc,
         extra_attachments=args.attachments,
-        by_message_id=by_mid,
     )
     _output_op(result, "reply-draft", t0)
 
@@ -303,7 +318,7 @@ def cmd_reply_draft(args, t0):
 def cmd_forward_draft(args, t0):
     from lib.ops.forward import make_forward_draft
 
-    identifier, by_mid = _resolve_id_or_message_id(args, "forward-draft", t0)
+    identifier = _resolve_id_or_message_id(args, "forward-draft", t0)
     if identifier is None:
         return
 
@@ -315,7 +330,6 @@ def cmd_forward_draft(args, t0):
         cc=args.cc,
         bcc=args.bcc,
         new_attachments=args.attachments,
-        by_message_id=by_mid,
     )
     _output_op(result, "forward-draft", t0)
 
@@ -323,14 +337,14 @@ def cmd_forward_draft(args, t0):
 def cmd_delete_email(args, t0):
     from lib.ops.delete import delete_email, delete_emails_batch
 
-    identifiers, by_mid = _resolve_ids_or_message_ids(args, "delete-email", t0)
+    identifiers = _resolve_ids_or_message_ids(args, "delete-email", t0)
     if identifiers is None:
         return
 
     if len(identifiers) == 1:
-        result = delete_email(identifiers[0], by_message_id=by_mid)
+        result = delete_email(identifiers[0])
     else:
-        result = delete_emails_batch(identifiers, by_message_id=by_mid)
+        result = delete_emails_batch(identifiers)
     _output_op(result, "delete-email", t0)
 
 
@@ -344,11 +358,11 @@ def cmd_delete_draft(args, t0):
 def cmd_move_email(args, t0):
     from lib.ops.move import move_email
 
-    identifier, by_mid = _resolve_id_or_message_id(args, "move-email", t0)
+    identifier = _resolve_id_or_message_id(args, "move-email", t0)
     if identifier is None:
         return
 
-    result = move_email(identifier, args.to, by_message_id=by_mid)
+    result = move_email(identifier, args.to, to_account=args.to_account)
     _output_op(result, "move-email", t0)
 
 
@@ -777,6 +791,7 @@ def build_parser():
     p.add_argument("--id", default=None, help="email integer ID")
     p.add_argument("--message-id", default=None, help="RFC 2822 message-id (preferred)")
     p.add_argument("--to", required=True, help="destination folder name")
+    p.add_argument("--to-account", default=None, help="destination account email (for cross-account moves)")
 
     # build-index
     sub.add_parser("build-index", help="build/rebuild FTS5 search index from disk")

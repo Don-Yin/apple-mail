@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # apple mail skill
 
-read, write, search, and manage emails in macos mail.app via cli.
+read, write, search, and manage emails in macos mail.app via cli. when this skill is called alone without any specific instruction, see `references/default-task.md`.
 
 ## quick start
 
@@ -35,28 +35,28 @@ all output is json with this contract:
 {"success": bool, "data": ..., "error": ..., "warnings": [], "meta": {...}}
 ```
 
-| command                                                                     | what it does                                | speed                                  |
-| --------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------- |
-| `server-info`                                                               | skill version and metadata                  | instant                                |
-| `check-health`                                                              | verify mail.app is responding               | ~1 s                                   |
-| `list-accounts`                                                             | list all mail accounts                      | ~0.15 s                                |
-| `list-folders --account EMAIL`                                              | list folders with email counts              | ~1-2 s                                 |
-| `list-recent [--limit N] [--include-content]`                               | recent emails from all inboxes              | ~0.3 s                                 |
-| `list-emails --account EMAIL --folder NAME [--limit N] [--include-content]` | emails in a folder                          | ~0.3 s                                 |
-| `list-drafts [--limit N] [--include-content]`                               | drafts across all accounts                  | ~0.25 s                                |
-| `read-email --message-id MID` or `--id ID`                                  | full email content, recipients, attachments | ~1-2 s                                 |
-| `search --query TEXT [--scope all\|subject\|sender] [--limit N]`            | search emails                               | ~1 ms (all) / ~200 ms (subject/sender) |
-| `compose-draft --account EMAIL --subject TEXT --body TEXT --to ADDR...`     | create a new draft                          | ~1 s                                   |
-| `amend-draft --id ID [--subject TEXT] [--body TEXT]`                        | modify an existing draft                    | ~2 s                                   |
-| `send-draft --id ID`                                                        | send a draft                                | ~2 s                                   |
-| `reply-draft --message-id MID --body TEXT [--reply-all]` or `--id ID`       | create a reply draft                        | ~2 s                                   |
-| `forward-draft --message-id MID --account EMAIL --body TEXT --to ADDR...`   | forward as draft                            | ~2 s                                   |
-| `delete-email --message-ids MID [MID...]` or `--ids ID [ID...]`            | delete email(s) (single or batch)           | ~1-3 s                                 |
-| `delete-draft --id ID`                                                      | delete a draft                              | ~1 s                                   |
-| `move-email --message-id MID --to FOLDER` or `--id ID`                     | move email to folder                        | ~3-5 s                                 |
-| `build-index`                                                               | build/rebuild fts5 search index             | ~30-120 s                              |
-| `index-status`                                                              | check background indexing progress          | instant                                |
-| `index-cancel`                                                              | cancel background indexing                  | instant                                |
+| command                                                                     | what it does                                | speed     |
+| --------------------------------------------------------------------------- | ------------------------------------------- | --------- |
+| `server-info`                                                               | skill version and metadata                  | instant   |
+| `check-health`                                                              | verify mail.app is responding               | ~1 s      |
+| `list-accounts`                                                             | list all mail accounts                      | ~0.15 s   |
+| `list-folders --account EMAIL`                                              | list folders with email counts              | ~1-2 s    |
+| `list-recent [--limit N] [--include-content]`                               | recent emails from all inboxes              | ~0.3 s    |
+| `list-emails --account EMAIL --folder NAME [--limit N] [--include-content]` | emails in a folder                          | ~0.3 s    |
+| `list-drafts [--limit N] [--include-content]`                               | drafts across all accounts                  | ~0.25 s   |
+| `read-email --message-id MID` or `--id ID`                                  | full email content, recipients, attachments | ~1-2 s    |
+| `search --query TEXT [--scope all\|subject\|sender] [--limit N]`            | search emails                               | ~1 ms     |
+| `compose-draft --account EMAIL --subject TEXT --body TEXT --to ADDR... [--attachments PATH...]`     | create a new draft                          | ~1 s      |
+| `amend-draft --id ID [--subject TEXT] [--body TEXT] [--attachments PATH...]`                        | modify an existing draft                    | ~2 s      |
+| `send-draft --id ID`                                                        | send a draft                                | ~2 s      |
+| `reply-draft --message-id MID --body TEXT [--reply-all] [--attachments PATH...]` or `--id ID`       | create a reply draft                        | ~2 s      |
+| `forward-draft --message-id MID --account EMAIL --body TEXT --to ADDR... [--attachments PATH...]`   | forward as draft                            | ~2 s      |
+| `delete-email --message-ids MID [MID...]` or `--ids ID [ID...]`             | delete email(s) (single or batch)           | ~1-3 s    |
+| `delete-draft --id ID`                                                      | delete a draft                              | ~1 s      |
+| `move-email --message-id MID --to FOLDER [--to-account EMAIL]` or `--id ID` | move email to folder (cross-account if --to-account) | ~3-5 s    |
+| `build-index`                                                               | build/rebuild fts5 search index             | ~30-120 s |
+| `index-status`                                                              | check background indexing progress          | instant   |
+| `index-cancel`                                                              | cancel background indexing                  | instant   |
 
 array arguments use space separation: `--to a@b.com c@d.com --cc x@y.com`
 

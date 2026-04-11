@@ -86,7 +86,6 @@ def parse_emlx(path: Path) -> dict | None:
 
         body = _extract_body(msg)
         msg_id = int(path.stem)
-        rfc_message_id = msg.get("Message-ID", "").strip().strip("<>")
 
         return {
             "id": msg_id,
@@ -95,7 +94,6 @@ def parse_emlx(path: Path) -> dict | None:
             "content": body,
             "date_received": date_received,
             "emlx_path": str(path),
-            "rfc_message_id": rfc_message_id,
         }
     except Exception:
         return None

@@ -1,0 +1,1 @@
+list all inbox emails with `list-recent --include-content`, then for each email call `read-email --message-id MID` to get the full content. after reading every email, present a summary table with columns: sender, subject, date, and proposed action (reply, archive, delete, follow up, or flag). ask the user to confirm before executing any action.

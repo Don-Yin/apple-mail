@@ -33,7 +33,7 @@ JSON.stringify(data);
 
 def list_recent_emails(most_recent_n_emails: int = 20, include_content: bool = False):
     """List recent emails from all account inboxes."""
-    limit = most_recent_n_emails if most_recent_n_emails else 999999
+    limit = most_recent_n_emails or 200
     script = f"""
 var accounts = Mail.accounts();
 var accNames = Mail.accounts.name();
@@ -53,8 +53,8 @@ for (var a = 0; a < accounts.length; a++) {{
         var folderName = mboxNames[m];
         var data = MailCore.batchFetch(mbox.messages, [
             "id", "subject", "sender", "dateReceived", "messageId"
-        ]);
-        var count = Math.min(data.id.length, limit);
+        ], limit);
+        var count = data.id.length;
         for (var i = 0; i < count; i++) {{
             results.push({{
                 id: String(data.id[i]),
@@ -75,6 +75,10 @@ JSON.stringify(results);
         results = run_jxa_with_core(script, timeout=60)
     except (JXAError, TimeoutError):
         return []
+
+    if results:
+        from ..resolve import upsert_listing_hints
+        upsert_listing_hints(results)
 
     if include_content and results:
         return enrich_with_content(results)

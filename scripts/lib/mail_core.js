@@ -44,10 +44,11 @@ const MailCore = {
         throw new Error("mailbox not found: " + name);
     },
 
-    batchFetch(msgs, props) {
+    batchFetch(msgs, props, limit) {
         const result = {};
         for (const prop of props) {
-            result[prop] = msgs[prop]();
+            const all = msgs[prop]();
+            result[prop] = (limit && limit > 0) ? all.slice(0, limit) : all;
         }
         return result;
     },
@@ -153,6 +154,42 @@ const MailCore = {
             for (const mb of mboxes) {
                 const msgs = mb.messages.whose({messageId: messageId})();
                 if (msgs.length > 0) return msgs[0];
+            }
+        }
+        return null;
+    },
+
+    resolveByMessageId(messageId, hintAccount, hintMailbox) {
+        var accounts = Mail.accounts();
+        var accEmails = Mail.accounts.emailAddresses();
+        // tier 1: scoped to hinted mailbox
+        if (hintAccount && hintMailbox) {
+            try {
+                var acc = this.getAccountByEmail(hintAccount);
+                var mbox = this.getMailbox(acc, hintMailbox);
+                var results = mbox.messages.whose({messageId: messageId})();
+                if (results.length > 0) return {msg: results[0], account: hintAccount, mailbox: hintMailbox};
+            } catch(e) {}
+        }
+        // tier 2: scan each account's inbox
+        for (var i = 0; i < accounts.length; i++) {
+            var email = accEmails[i].length > 0 ? accEmails[i][0] : accounts[i].name();
+            try {
+                var ib = accounts[i].mailboxes.whose({name: "Inbox"})()[0];
+                if (!ib) continue;
+                var results = ib.messages.whose({messageId: messageId})();
+                if (results.length > 0) return {msg: results[0], account: email, mailbox: ib.name()};
+            } catch(e) {}
+        }
+        // tier 3: scan all mailboxes
+        for (var i = 0; i < accounts.length; i++) {
+            var email = accEmails[i].length > 0 ? accEmails[i][0] : accounts[i].name();
+            var mboxes = accounts[i].mailboxes();
+            for (var j = 0; j < mboxes.length; j++) {
+                try {
+                    var results = mboxes[j].messages.whose({messageId: messageId})();
+                    if (results.length > 0) return {msg: results[0], account: email, mailbox: mboxes[j].name()};
+                } catch(e) {}
             }
         }
         return null;
