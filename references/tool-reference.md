@@ -24,7 +24,7 @@ No parameters. Returns `{success: bool, message: str}`.
 No parameters. Returns list of account objects:
 
 ```json
-[{"name": "Exchange", "user": "dy323", "emails": "me@example.com,alias@example.com"}]
+[{"name": "Exchange", "user": "jdoe", "emails": "me@example.com,alias@example.com"}]
 ```
 
 ## list-folders

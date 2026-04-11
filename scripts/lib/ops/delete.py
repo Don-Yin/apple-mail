@@ -4,6 +4,15 @@ import textwrap
 from ..applescript import validate_id, run_applescript, sync_mail_state
 
 
+def _remove_from_index(int_id: int):
+    """remove email from FTS index after deletion."""
+    from ..search_index.manager import SearchIndexManager
+    with SearchIndexManager() as mgr:
+        conn = mgr._get_conn()
+        conn.execute("DELETE FROM emails WHERE message_id = ?", (int_id,))
+        conn.commit()
+
+
 def delete_draft(draft_id: str) -> dict:
     """Delete a draft email by its ID."""
     try:
@@ -131,6 +140,7 @@ def delete_email(identifier: str) -> dict:
         return {"success": False, "message": f"email with id {identifier} not found"}
     if output == "SUCCESS":
         sync_mail_state()
+        _remove_from_index(int(identifier))
         return {"success": True, "message": "email deleted successfully"}
     return {"success": False, "message": f"unexpected output: {output}"}
 
@@ -236,6 +246,10 @@ def delete_emails_batch(identifiers: list[str]) -> dict:
 
     if deleted_count > 0:
         sync_mail_state()
+        not_found_set = set(not_found)
+        for eid in validated:
+            if eid not in not_found_set:
+                _remove_from_index(int(eid))
 
     return {
         "success": deleted_count > 0,

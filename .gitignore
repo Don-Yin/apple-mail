@@ -10,6 +10,7 @@ assets/index-progress.json
 assets/index-progress.lock
 assets/logs/
 assets/.deps.hash
+assets/deletion-log.jsonl
 
 # Keep the assets directory itself
 !assets/.gitkeep

@@ -372,6 +372,15 @@ def cmd_move_email(args, t0):
     _output_op(result, "move-email", t0)
 
 
+def cmd_batch_move(args, t0):
+    from lib.ops.move import batch_move_emails
+    identifiers = _resolve_ids_or_message_ids(args, "batch-move", t0)
+    if identifiers is None:
+        return
+    result = batch_move_emails(identifiers, args.to, to_account=args.to_account)
+    _output_op(result, "batch-move", t0)
+
+
 def cmd_build_index(args, t0):
     from lib.ops.search import build_search_index
 
@@ -815,6 +824,13 @@ def build_parser():
     p.add_argument("--to", required=True, help="destination folder name")
     p.add_argument("--to-account", default=None, help="destination account email (for cross-account moves)")
 
+    # batch-move
+    p = sub.add_parser("batch-move", help="batch-move emails to a folder")
+    p.add_argument("--ids", nargs="+", default=None, help="email integer ID(s)")
+    p.add_argument("--message-ids", nargs="+", default=None, help="RFC 2822 message-id(s) (preferred)")
+    p.add_argument("--to", required=True, help="destination folder name")
+    p.add_argument("--to-account", default=None, help="destination account email (cross-account)")
+
     # build-index
     sub.add_parser("build-index", help="build/rebuild FTS5 search index from disk")
 
@@ -852,6 +868,7 @@ COMMAND_MAP = {
     "delete-email": cmd_delete_email,
     "delete-draft": cmd_delete_draft,
     "move-email": cmd_move_email,
+    "batch-move": cmd_batch_move,
     "build-index": cmd_build_index,
     "index-status": cmd_index_status,
     "index-cancel": cmd_index_cancel,

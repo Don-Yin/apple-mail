@@ -47,6 +47,7 @@ var accNames = Mail.accounts.name();
 var accEmails = Mail.accounts.emailAddresses();
 var results = [];
 var totalInbox = 0;
+var truncated = false;
 var limit = {limit};
 
 for (var a = 0; a < accounts.length; a++) {{
@@ -60,11 +61,13 @@ for (var a = 0; a < accounts.length; a++) {{
         var mbox = mboxes[m];
         var folderName = mboxNames[m];
         var allIds = mbox.messages.id();
-        totalInbox += allIds.length;
+        var inboxCount = allIds.length;
+        totalInbox += inboxCount;
         var data = MailCore.batchFetch(mbox.messages, [
             "id", "subject", "sender", "dateReceived", "messageId"
         ], limit);
         var count = data.id.length;
+        if (limit > 0 && inboxCount > count) truncated = true;
         for (var i = 0; i < count; i++) {{
             results.push({{
                 id: String(data.id[i]),
@@ -79,7 +82,7 @@ for (var a = 0; a < accounts.length; a++) {{
         break;
     }}
 }}
-JSON.stringify({{emails: results, total_inbox: totalInbox}});
+JSON.stringify({{emails: results, total_inbox: totalInbox, truncated: truncated}});
 """
     try:
         raw = run_jxa_with_core(script, timeout=60)
@@ -88,6 +91,7 @@ JSON.stringify({{emails: results, total_inbox: totalInbox}});
 
     results = raw.get("emails", []) if isinstance(raw, dict) else raw
     total_inbox = raw.get("total_inbox", len(results)) if isinstance(raw, dict) else len(results)
+    truncated = raw.get("truncated", False) if isinstance(raw, dict) else False
 
     # normalize folder names for consistency
     if results:
@@ -96,7 +100,14 @@ JSON.stringify({{emails: results, total_inbox: totalInbox}});
             if fn.upper() == "INBOX":
                 r["folder_name"] = "Inbox"
 
+    # classify email types
+    if results:
+        from ..classify import classify_email
+        for r in results:
+            r["email_type"] = classify_email(r.get("subject", ""), r.get("sender", ""))
+
     # deduplicate by rfc message_id (Exchange sync can create multiple int_ids for same email)
+    pre_dedup_count = len(results)
     if results:
         seen = set()
         deduped = []
@@ -114,15 +125,13 @@ JSON.stringify({{emails: results, total_inbox: totalInbox}});
         upsert_listing_hints(results)
 
     showing = len(results)
-    deduped_removed = total_inbox - showing
-    truncated_by_limit = limit and showing >= limit
+    deduped_removed = pre_dedup_count - showing
 
-    meta = {"total_inbox": showing, "showing": showing}
+    meta = {"total_inbox": total_inbox, "showing": showing}
     if deduped_removed > 0:
         meta["duplicates_removed"] = deduped_removed
-    if truncated_by_limit:
+    if truncated:
         meta["note"] = f"showing {showing} of {total_inbox} inbox emails (limit={limit}). use --limit 0 to fetch all."
-        meta["total_inbox"] = total_inbox
 
     if include_content and results:
         enriched = enrich_with_content(results)

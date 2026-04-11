@@ -52,6 +52,27 @@ JSON.stringify({{emails: results, total: totalCount}});
     results = raw.get("emails", []) if isinstance(raw, dict) else raw
     total = raw.get("total", len(results)) if isinstance(raw, dict) else len(results)
 
+    # classify email types
+    if results:
+        from ..classify import classify_email
+        for r in results:
+            r["email_type"] = classify_email(r.get("subject", ""), r.get("sender", ""))
+
+    # deduplicate by rfc message_id (exchange sync can create multiple int_ids)
+    pre_dedup_count = len(results)
+    if results:
+        seen = set()
+        deduped = []
+        for r in results:
+            mid = r.get("message_id", "")
+            if mid and mid in seen:
+                continue
+            if mid:
+                seen.add(mid)
+            deduped.append(r)
+        results = deduped
+    deduped_removed = pre_dedup_count - len(results)
+
     if results:
         from ..resolve import upsert_listing_hints
         upsert_listing_hints(results)
@@ -64,6 +85,8 @@ JSON.stringify({{emails: results, total: totalCount}});
         return enriched
 
     output = {"emails": results, "total": total, "showing": len(results)}
+    if deduped_removed > 0:
+        output["duplicates_removed"] = deduped_removed
     if len(results) < total:
         output["note"] = f"showing {len(results)} of {total} emails. use --limit 0 to fetch all."
     return output

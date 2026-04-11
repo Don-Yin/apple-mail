@@ -51,7 +51,7 @@ def build_search_index() -> dict:
 
 
 def _search_fts(query: str, account_email: str | None, limit: int) -> dict:
-    """FTS search with count query for total matches."""
+    """fts search with count query and staleness warning."""
     mgr = SearchIndexManager()
     if not mgr.has_index():
         mgr.close()
@@ -60,12 +60,24 @@ def _search_fts(query: str, account_email: str | None, limit: int) -> dict:
     try:
         total = mgr.search_count(query, account=account_email)
         results = mgr.search(query, account=account_email, limit=limit)
+        age = mgr.get_index_age()
     finally:
         mgr.close()
+
+    from ..classify import classify_email
+    for r in results:
+        r["email_type"] = classify_email(r.get("subject", ""), r.get("sender", ""))
 
     output = {"results": results, "total": total, "showing": len(results)}
     if len(results) < total:
         output["note"] = f"showing {len(results)} of {total} matches. use --limit to fetch more."
+    if age.get("relative") and age["relative"] != "no index":
+        output["index_age"] = age["relative"]
+    if age.get("iso"):
+        from datetime import datetime
+        age_seconds = (datetime.now() - datetime.fromisoformat(age["iso"])).total_seconds()
+        if age_seconds > 300:
+            output["staleness_warning"] = "FTS index is over 5 min old. for bulk move/delete, verify against live list-emails output."
     return output
 
 
@@ -124,6 +136,10 @@ JSON.stringify(results);
         results = run_jxa_with_core(script, timeout=30)
     except (JXAError, TimeoutError):
         return {"results": [], "total": 0, "showing": 0}
+
+    from ..classify import classify_email
+    for r in results:
+        r["email_type"] = classify_email(r.get("subject", ""), r.get("sender", ""))
 
     output = {"results": results, "total": len(results), "showing": len(results)}
     if len(results) >= limit:

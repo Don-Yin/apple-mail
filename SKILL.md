@@ -54,6 +54,7 @@ all output is json with this contract:
 | `delete-email --message-ids MID [MID...]` or `--ids ID [ID...]`             | delete email(s) (single or batch)           | ~1-3 s    |
 | `delete-draft --id ID`                                                      | delete a draft                              | ~1 s      |
 | `move-email --message-id MID --to FOLDER [--to-account EMAIL]` or `--id ID` | move email to folder (cross-account if --to-account) | ~3-5 s    |
+| `batch-move --message-ids MID [MID...] --to FOLDER [--to-account EMAIL]`    | batch-move emails to a folder               | ~5-15 s   |
 | `build-index`                                                               | build/rebuild fts5 search index             | ~30-120 s |
 | `index-status`                                                              | check background indexing progress          | instant   |
 | `index-cancel`                                                              | cancel background indexing                  | instant   |
@@ -86,9 +87,21 @@ for detailed parameter docs and return shapes, see `references/tool-reference.md
 ### compose and send
 
 1. `compose-draft --account me@example.com --subject "Hello" --body "..." --to recipient@example.com`
-2. `list-drafts` — get stable draft id
-3. `amend-draft --id ID --body "revised text"` — (optional) revise
-4. `send-draft --id ID` — send
+2. `list-drafts` -- get stable draft id
+3. `amend-draft --id ID --body "revised text"` -- (optional) revise
+4. `send-draft --id ID` -- send
+
+### bulk triage
+
+for moving or deleting many emails at once, always use live data (not search):
+
+1. `list-emails --account EMAIL --folder Inbox --limit 0` -- get live listing with stable message_ids
+2. filter results by subject, sender, or date to identify target emails
+3. confirm the list with the user
+4. `batch-move --message-ids MID [MID...] --to FOLDER [--to-account EMAIL]` -- move all in one call
+   or `delete-email --message-ids MID [MID...]` -- delete all in one call
+
+important: never use `search --scope all` as the source of truth for bulk operations. the FTS index can be stale. always verify against live `list-emails` or `list-recent` output.
 
 ## safety rules
 
