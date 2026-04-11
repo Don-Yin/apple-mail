@@ -28,8 +28,9 @@ if (r) {{
     JSON.stringify(null);
 }}
 """
+    timeout = 30 if hint else 15
     try:
-        result = run_jxa_with_core(script, timeout=30)
+        result = run_jxa_with_core(script, timeout=timeout)
     except (JXAError, TimeoutError):
         return None
 

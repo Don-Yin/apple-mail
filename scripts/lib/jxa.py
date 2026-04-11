@@ -176,9 +176,22 @@ def _jxa_fetch_with_budget(
             break
 
         msg_id = int(msg["id"])
+        folder = msg.get("folder_name", "")
+        account = msg.get("account_email", "")
+        safe_folder = json.dumps(folder)
+        safe_account = json.dumps(account)
         try:
             script = f"""
-var msg = MailCore.findMessageAcrossAccounts({msg_id});
+var msg = null;
+if ({safe_account} && {safe_folder}) {{
+    try {{
+        var acc = MailCore.getAccountByEmail({safe_account});
+        var mbox = MailCore.getMailbox(acc, {safe_folder});
+        var msgs = mbox.messages.whose({{id: {msg_id}}})();
+        if (msgs.length > 0) msg = msgs[0];
+    }} catch(e) {{}}
+}}
+if (!msg) msg = MailCore.findMessageAcrossAccounts({msg_id});
 if (msg) {{
     var content = "";
     try {{ content = msg.content() || ""; }} catch(e) {{}}
