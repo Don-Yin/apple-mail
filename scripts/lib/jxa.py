@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import ASSETS_DIR, SCRIPTS_DIR
+from . import ASSETS_DIR, SCRIPTS_DIR, strip_html
 from .search_index.schema import PROGRESS_PATH
 
 MAIL_CORE_JS = (Path(__file__).parent / "mail_core.js").read_text()
@@ -110,7 +110,7 @@ def enrich_with_content(messages: list[dict]) -> dict:
         for msg in messages:
             mid = int(msg["id"])
             content = content_map.get(mid, "")
-            preview = content.replace("\n", " ")[:_PREVIEW_LEN] if content else ""
+            preview = strip_html(content)[:_PREVIEW_LEN] if content else ""
 
             entry = {**msg}
             entry["preview"] = preview

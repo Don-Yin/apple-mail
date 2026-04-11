@@ -5,6 +5,19 @@ ASSETS_DIR = SKILL_ROOT / "assets"
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
 
 
+def strip_html(text: str) -> str:
+    """extract visible text from html, stripping tags, urls, and tracking noise."""
+    import re
+    text = re.sub(r'<style[^>]*>.*?</style>', ' ', text, flags=re.DOTALL)
+    text = re.sub(r'<script[^>]*>.*?</script>', ' ', text, flags=re.DOTALL)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'https?://\S{80,}', '', text)
+    text = re.sub(r'&nbsp;', ' ', text)
+    text = re.sub(r'&[a-zA-Z]+;', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
 def relative_time(iso_str: str) -> str:
     """Convert ISO datetime string to human-readable relative time."""
     from datetime import datetime

@@ -506,7 +506,9 @@ JSON.stringify(m);
         uuid_map = self._account_uuid_map()
         for row in cursor:
             content = row[5] or ""
-            snippet = " ".join(content.split())[:200] + ("..." if len(content) > 200 else "")
+            from .. import strip_html
+            clean = strip_html(content)
+            snippet = clean[:200] + ("..." if len(clean) > 200 else "")
             acc = uuid_map.get(row[1], row[1]) if row[1] else ""
             results.append({
                 "id": str(row[0]),
