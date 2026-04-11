@@ -19,6 +19,7 @@ def list_emails_in_folder(
 var acct = MailCore.getAccountByEmail({safe_email});
 var mbox = MailCore.getMailbox(acct, {safe_folder});
 var folderName = mbox.name();
+var totalCount = mbox.messages.id().length;
 var data = MailCore.batchFetch(mbox.messages, [
     "id", "subject", "sender", "dateReceived", "messageId"
 ], {effective_limit});
@@ -35,23 +36,34 @@ for (var i = 0; i < count; i++) {{
         folder_name: folderName
     }});
 }}
-JSON.stringify(results);
+JSON.stringify({{emails: results, total: totalCount}});
 """
     try:
-        results = run_jxa_with_core(script, timeout=60)
+        raw = run_jxa_with_core(script, timeout=60)
     except JXAError as e:
         if "no account found" in str(e):
             return {"success": False, "message": f"no account found for email '{account_email}'"}
         if "mailbox not found" in str(e):
             return {"success": False, "message": f"folder '{folder_name}' not found in account '{account_email}'"}
-        return []
+        return {"emails": [], "total": 0, "showing": 0}
     except TimeoutError:
-        return []
+        return {"emails": [], "total": 0, "showing": 0}
+
+    results = raw.get("emails", []) if isinstance(raw, dict) else raw
+    total = raw.get("total", len(results)) if isinstance(raw, dict) else len(results)
 
     if results:
         from ..resolve import upsert_listing_hints
         upsert_listing_hints(results)
 
     if include_content and results:
-        return enrich_with_content(results)
-    return results
+        enriched = enrich_with_content(results)
+        if isinstance(enriched, dict):
+            enriched["total"] = total
+            enriched["showing"] = len(results)
+        return enriched
+
+    output = {"emails": results, "total": total, "showing": len(results)}
+    if len(results) < total:
+        output["note"] = f"showing {len(results)} of {total} emails. use --limit 0 to fetch all."
+    return output

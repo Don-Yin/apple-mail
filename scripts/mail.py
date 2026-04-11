@@ -735,12 +735,12 @@ def build_parser():
     p = sub.add_parser("list-emails", help="list emails in a specific folder")
     p.add_argument("--account", required=True, help="account email address")
     p.add_argument("--folder", required=True, help="folder name (case-insensitive)")
-    p.add_argument("--limit", type=int, default=50, help="max emails (default: 50)")
+    p.add_argument("--limit", type=int, default=128, help="max emails (default: 128)")
     p.add_argument("--include-content", action="store_true", help="add preview from search index")
 
     # list-drafts
     p = sub.add_parser("list-drafts", help="list drafts across all accounts")
-    p.add_argument("--limit", type=int, default=50, help="max drafts (default: 50)")
+    p.add_argument("--limit", type=int, default=128, help="max drafts (default: 128)")
     p.add_argument("--include-content", action="store_true", help="add preview from search index")
 
     # read-email
@@ -753,7 +753,7 @@ def build_parser():
     p.add_argument("--query", required=True, help="search query")
     p.add_argument("--scope", default="all", choices=["all", "subject", "sender"], help="search scope (default: all)")
     p.add_argument("--account", help="limit to specific account")
-    p.add_argument("--limit", type=int, default=20, help="max results (default: 20)")
+    p.add_argument("--limit", type=int, default=64, help="max results (default: 64)")
 
     # compose-draft
     p = sub.add_parser("compose-draft", help="create a new draft email")

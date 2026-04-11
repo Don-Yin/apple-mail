@@ -501,27 +501,29 @@ def reply_draft(
 # ------------------------------------------------------------------
 
 
-def list_drafts(limit: int = 50, include_content: bool = False) -> list[dict] | dict:
+def list_drafts(limit: int = 128, include_content: bool = False) -> dict:
     """List existing draft emails across all mail accounts."""
-    effective_limit = limit if limit is not None else 50
+    effective_limit = limit if limit is not None else 200
 
     script = f"""
 var accounts = Mail.accounts();
 var accNames = Mail.accounts.name();
 var accEmails = Mail.accounts.emailAddresses();
 var results = [];
+var totalCount = 0;
 var limit = {effective_limit};
 
-for (var a = 0; a < accounts.length && results.length < limit; a++) {{
+for (var a = 0; a < accounts.length; a++) {{
     var acct = accounts[a];
     var accEmail = accEmails[a].length > 0 ? accEmails[a][0] : accNames[a];
     var mboxNames = acct.mailboxes.name();
     var mboxes = acct.mailboxes();
 
-    for (var m = 0; m < mboxNames.length && results.length < limit; m++) {{
+    for (var m = 0; m < mboxNames.length; m++) {{
         if (mboxNames[m].toLowerCase().indexOf("draft") === -1) continue;
         var mbox = mboxes[m];
         var folderName = mboxNames[m];
+        totalCount += mbox.messages.id().length;
         var data = MailCore.batchFetch(mbox.messages, [
             "id", "subject", "sender", "dateReceived", "messageId"
         ]);
@@ -539,13 +541,24 @@ for (var a = 0; a < accounts.length && results.length < limit; a++) {{
         }}
     }}
 }}
-JSON.stringify(results);
+JSON.stringify({{drafts: results, total: totalCount}});
 """
     try:
-        results = run_jxa_with_core(script, timeout=30)
+        raw = run_jxa_with_core(script, timeout=30)
     except (JXAError, TimeoutError):
-        return []
+        return {"drafts": [], "total": 0, "showing": 0}
+
+    results = raw.get("drafts", []) if isinstance(raw, dict) else raw
+    total = raw.get("total", len(results)) if isinstance(raw, dict) else len(results)
 
     if include_content and results:
-        return enrich_with_content(results)
-    return results
+        enriched = enrich_with_content(results)
+        if isinstance(enriched, dict):
+            enriched["total"] = total
+            enriched["showing"] = len(results)
+        return enriched
+
+    output = {"drafts": results, "total": total, "showing": len(results)}
+    if len(results) < total:
+        output["note"] = f"showing {len(results)} of {total} drafts. use --limit 0 to fetch all."
+    return output

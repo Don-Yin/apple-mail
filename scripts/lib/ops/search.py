@@ -5,7 +5,7 @@ from ..search_index import SearchIndexManager
 from ..jxa import run_jxa_with_core, JXAError
 
 
-def search_emails(query: str, scope: str = "all", account_email: str = None, limit: int = 20) -> list[dict]:
+def search_emails(query: str, scope: str = "all", account_email: str = None, limit: int = 64) -> dict:
     """Search emails by content, subject, or sender.
 
     scope="all" uses FTS5 index (~1 ms), "subject"/"sender" use JXA (~200 ms).
@@ -21,12 +21,9 @@ def search_emails(query: str, scope: str = "all", account_email: str = None, lim
 
     if scope == "all":
         return _search_fts(query, account_email, limit)
-    elif scope == "subject":
-        return _search_jxa_field(query, "subject", account_email, limit)
-    elif scope == "sender":
-        return _search_jxa_field(query, "sender", account_email, limit)
-    else:
-        return [{"error": f"unknown scope: {scope}. use 'all', 'subject', or 'sender'"}]
+    if scope in ("subject", "sender"):
+        return _search_jxa_field(query, scope, account_email, limit)
+    return {"results": [], "total": 0, "showing": 0, "note": f"unknown scope: {scope}. use 'all', 'subject', or 'sender'"}
 
 
 def build_search_index() -> dict:
@@ -53,21 +50,26 @@ def build_search_index() -> dict:
         mgr.close()
 
 
-def _search_fts(query: str, account_email: str | None, limit: int) -> list[dict]:
+def _search_fts(query: str, account_email: str | None, limit: int) -> dict:
+    """FTS search with count query for total matches."""
     mgr = SearchIndexManager()
     if not mgr.has_index():
         mgr.close()
         return [{"error": "no search index found. run build-index to create one."}]
 
     try:
+        total = mgr.search_count(query, account=account_email)
         results = mgr.search(query, account=account_email, limit=limit)
     finally:
         mgr.close()
 
-    return results
+    output = {"results": results, "total": total, "showing": len(results)}
+    if len(results) < total:
+        output["note"] = f"showing {len(results)} of {total} matches. use --limit to fetch more."
+    return output
 
 
-def _search_jxa_field(query: str, field: str, account_email: str | None, limit: int) -> list[dict]:
+def _search_jxa_field(query: str, field: str, account_email: str | None, limit: int) -> dict:
     """Search inbox by subject or sender using JXA whose-clause filtering."""
     safe_query = json.dumps(query.lower())
 
@@ -119,6 +121,11 @@ for (var a = 0; a < accounts.length && results.length < limit; a++) {{
 JSON.stringify(results);
 """
     try:
-        return run_jxa_with_core(script, timeout=30)
+        results = run_jxa_with_core(script, timeout=30)
     except (JXAError, TimeoutError):
-        return []
+        return {"results": [], "total": 0, "showing": 0}
+
+    output = {"results": results, "total": len(results), "showing": len(results)}
+    if len(results) >= limit:
+        output["note"] = f"showing {len(results)} results (limit reached). total may be higher."
+    return output

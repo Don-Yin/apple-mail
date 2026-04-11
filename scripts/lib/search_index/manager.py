@@ -523,6 +523,27 @@ JSON.stringify(m);
             })
         return results
 
+    def search_count(self, query: str, account: str | None = None, mailbox: str | None = None) -> int:
+        """Return total number of FTS matches (without LIMIT)."""
+        safe_query = sanitize_fts_query(query)
+        if not safe_query:
+            return 0
+
+        conn = self._get_conn()
+        sql = "SELECT COUNT(*) FROM emails_fts JOIN emails e ON emails_fts.rowid = e.rowid WHERE emails_fts MATCH ?"
+        params: list = [safe_query]
+        if account:
+            sql += " AND e.account = ?"
+            params.append(account)
+        if mailbox:
+            sql += " AND e.mailbox = ?"
+            params.append(mailbox)
+
+        try:
+            return conn.execute(sql, params).fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0
+
     # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------

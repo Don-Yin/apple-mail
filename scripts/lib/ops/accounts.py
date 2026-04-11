@@ -113,13 +113,21 @@ JSON.stringify({{emails: results, total_inbox: totalInbox}});
         from ..resolve import upsert_listing_hints
         upsert_listing_hints(results)
 
+    showing = len(results)
+    deduped_removed = total_inbox - showing
+    truncated_by_limit = limit and showing >= limit
+
+    meta = {"total_inbox": showing, "showing": showing}
+    if deduped_removed > 0:
+        meta["duplicates_removed"] = deduped_removed
+    if truncated_by_limit:
+        meta["note"] = f"showing {showing} of {total_inbox} inbox emails (limit={limit}). use --limit 0 to fetch all."
+        meta["total_inbox"] = total_inbox
+
     if include_content and results:
         enriched = enrich_with_content(results)
         if isinstance(enriched, dict):
-            enriched["total_inbox"] = total_inbox
+            enriched.update(meta)
         return enriched
 
-    output = {"emails": results, "total_inbox": total_inbox, "showing": len(results)}
-    if limit and len(results) >= limit and total_inbox > limit:
-        output["note"] = f"showing {len(results)} of {total_inbox} inbox emails. use --limit 0 to fetch all."
-    return output
+    return {"emails": results, **meta}
