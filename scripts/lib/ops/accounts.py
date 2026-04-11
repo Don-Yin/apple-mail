@@ -40,7 +40,7 @@ JSON.stringify(data);
 
 def list_recent_emails(most_recent_n_emails: int = 20, include_content: bool = False):
     """List recent emails from all account inboxes."""
-    limit = most_recent_n_emails or 200
+    limit = most_recent_n_emails if most_recent_n_emails is not None else 200
     script = f"""
 var accounts = Mail.accounts();
 var accNames = Mail.accounts.name();

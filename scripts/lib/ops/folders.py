@@ -13,7 +13,7 @@ def list_emails_in_folder(
     """List emails in a specific folder from a specific account."""
     safe_email = json.dumps(account_email)
     safe_folder = json.dumps(folder_name)
-    effective_limit = limit or 200
+    effective_limit = limit if limit is not None else 200
 
     script = f"""
 var acct = MailCore.getAccountByEmail({safe_email});

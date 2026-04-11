@@ -503,7 +503,7 @@ def reply_draft(
 
 def list_drafts(limit: int = 50, include_content: bool = False) -> list[dict] | dict:
     """List existing draft emails across all mail accounts."""
-    effective_limit = limit if limit else 999999
+    effective_limit = limit if limit is not None else 50
 
     script = f"""
 var accounts = Mail.accounts();
