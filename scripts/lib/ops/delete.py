@@ -1,5 +1,4 @@
 """Email and draft deletion operations."""
-
 import textwrap
 from ..applescript import validate_id, run_applescript, sync_mail_state
 
@@ -8,10 +7,7 @@ def _remove_from_index(int_id: int):
     """remove email from FTS index after deletion."""
     from ..search_index.manager import SearchIndexManager
     with SearchIndexManager() as mgr:
-        conn = mgr._get_conn()
-        conn.execute("DELETE FROM emails WHERE message_id = ?", (int_id,))
-        conn.commit()
-
+        mgr.remove_by_int_id(int_id)
 
 def delete_draft(draft_id: str) -> dict:
     """Delete a draft email by its ID."""
@@ -54,9 +50,7 @@ def delete_draft(draft_id: str) -> dict:
 
     try:
         result = run_applescript(script)
-    except TimeoutError as e:
-        return {"success": False, "message": str(e)}
-    except RuntimeError as e:
+    except (TimeoutError, RuntimeError) as e:
         return {"success": False, "message": str(e)}
 
     output = result.stdout.strip()
@@ -129,9 +123,7 @@ def delete_email(identifier: str) -> dict:
 
     try:
         result = run_applescript(script)
-    except TimeoutError as e:
-        return {"success": False, "message": str(e)}
-    except RuntimeError as e:
+    except (TimeoutError, RuntimeError) as e:
         return {"success": False, "message": str(e)}
 
     output = result.stdout.strip()
@@ -234,9 +226,7 @@ def delete_emails_batch(identifiers: list[str]) -> dict:
 
     try:
         result = run_applescript(script)
-    except TimeoutError as e:
-        return {"success": False, "message": str(e)}
-    except RuntimeError as e:
+    except (TimeoutError, RuntimeError) as e:
         return {"success": False, "message": str(e)}
 
     output = result.stdout.strip()

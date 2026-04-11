@@ -232,6 +232,12 @@ class SearchIndexManager:
                     )
         conn.commit()
 
+    def remove_by_int_id(self, int_id: int):
+        """delete all index entries matching an apple mail integer id."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM emails WHERE message_id = ?", (int_id,))
+        conn.commit()
+
     def get_hint(self, rfc_message_id: str) -> dict | None:
         """lookup cached location for an rfc message-id."""
         conn = self._get_conn()

@@ -4,18 +4,6 @@ import textwrap
 from ..applescript import validate_id, escape_applescript, run_applescript, sync_mail_state, build_find_by_int_block
 
 
-def _update_index_location(int_id: int, new_account: str, new_mailbox: str):
-    """update FTS index entry after moving an email."""
-    from ..search_index.manager import SearchIndexManager
-    with SearchIndexManager() as mgr:
-        conn = mgr._get_conn()
-        conn.execute(
-            "UPDATE emails SET account = ?, mailbox = ? WHERE message_id = ?",
-            (new_account, new_mailbox, int_id),
-        )
-        conn.commit()
-
-
 def _dest_account_block(account_email: str = None) -> str:
     """build applescript fragment to resolve the destination account."""
     if account_email:
@@ -111,7 +99,6 @@ def move_email(identifier: str, to_folder: str, to_account: str = None) -> dict:
             return {"success": False, "message": f"folder '{to_folder}' not found{dest}"}
         case "SUCCESS":
             sync_mail_state(delay_seconds=1.0)
-            _update_index_location(int(identifier), to_account or "", to_folder)
             dest = f"{to_account}/{to_folder}" if to_account else to_folder
             return {"success": True, "message": f"email moved to {dest} successfully"}
         case _:
@@ -239,10 +226,6 @@ def batch_move_emails(identifiers: list[str], to_folder: str, to_account: str = 
 
     if moved_count > 0:
         sync_mail_state(delay_seconds=1.0)
-        not_found_set = set(not_found)
-        for eid in validated:
-            if eid not in not_found_set:
-                _update_index_location(int(eid), to_account or "", to_folder)
 
     dest = f"{to_account}/{to_folder}" if to_account else to_folder
     return {
