@@ -39,7 +39,13 @@ JSON.stringify(results);
 """
     try:
         results = run_jxa_with_core(script, timeout=60)
-    except (JXAError, TimeoutError):
+    except JXAError as e:
+        if "no account found" in str(e):
+            return {"success": False, "message": f"no account found for email '{account_email}'"}
+        if "mailbox not found" in str(e):
+            return {"success": False, "message": f"folder '{folder_name}' not found in account '{account_email}'"}
+        return []
+    except TimeoutError:
         return []
 
     if results:

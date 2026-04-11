@@ -61,11 +61,16 @@ fi
 
 if [ -n "$_current_hash" ] && [ "$_current_hash" != "$_cached_hash" ]; then
     echo "Installing/updating dependencies from requirements.txt..." >&2
-    micromamba run -n "$ENV_NAME" pip install -q -r "$REQUIREMENTS" >&2
+    "$MAMBA_ROOT_PREFIX/envs/$ENV_NAME/bin/pip" install -q -r "$REQUIREMENTS" >&2
     echo "$_current_hash" > "$DEPS_HASH_FILE"
 fi
 
 # ------------------------------------------------------------------
-# Run mail.py
+# Run mail.py — use env python directly (micromamba run fails in non-interactive shells)
 # ------------------------------------------------------------------
-exec micromamba run -n "$ENV_NAME" python "$SCRIPT_DIR/mail.py" "$@"
+ENV_PYTHON="$MAMBA_ROOT_PREFIX/envs/$ENV_NAME/bin/python"
+if [ ! -x "$ENV_PYTHON" ]; then
+    echo '{"success": false, "data": null, "error": {"code": "PYTHON_NOT_FOUND", "message": "python not found at '"$ENV_PYTHON"'. Run: micromamba create -y -n '"$ENV_NAME"' python='"$PYTHON_VERSION"'", "details": {}}, "warnings": [], "meta": {"command": "bootstrap", "execution_time_ms": 0, "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}}' >&2
+    exit 1
+fi
+exec "$ENV_PYTHON" "$SCRIPT_DIR/mail.py" "$@"

@@ -442,6 +442,24 @@ class SearchIndexManager:
     # Search
     # ------------------------------------------------------------------
 
+    def _account_uuid_map(self) -> dict:
+        """map account uuids to email addresses using Mail.app."""
+        try:
+            from ..jxa import run_jxa_with_core, JXAError
+            data = run_jxa_with_core("""
+var accs = Mail.accounts();
+var ids = Mail.accounts.id();
+var emails = Mail.accounts.emailAddresses();
+var m = {};
+for (var i = 0; i < accs.length; i++) {
+    if (emails[i].length > 0) m[ids[i]] = emails[i][0];
+}
+JSON.stringify(m);
+""", timeout=5)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
     def search(
         self,
         query: str,
@@ -458,7 +476,7 @@ class SearchIndexManager:
 
         sql = """
             SELECT e.message_id, e.account, e.mailbox, e.subject, e.sender,
-                   e.content, e.date_received,
+                   e.content, e.date_received, e.rfc_message_id,
                    -bm25(emails_fts, 1.0, 0.5, 2.0) as score
             FROM emails_fts
             JOIN emails e ON emails_fts.rowid = e.rowid
@@ -485,18 +503,21 @@ class SearchIndexManager:
             raise
 
         results = []
+        uuid_map = self._account_uuid_map()
         for row in cursor:
             content = row[5] or ""
             snippet = " ".join(content.split())[:200] + ("..." if len(content) > 200 else "")
+            acc = uuid_map.get(row[1], row[1]) if row[1] else ""
             results.append({
-                "id": row[0],
-                "account": row[1],
-                "mailbox": row[2],
+                "id": str(row[0]),
+                "message_id": row[7] or "",
                 "subject": row[3] or "",
                 "sender": row[4] or "",
-                "snippet": snippet,
                 "date_received": row[6] or "",
-                "score": round(row[7], 3),
+                "account_email": acc,
+                "folder_name": row[2] or "",
+                "snippet": snippet,
+                "score": round(row[8], 3),
             })
         return results
 

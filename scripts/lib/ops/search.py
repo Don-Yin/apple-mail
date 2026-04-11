@@ -51,7 +51,7 @@ def _search_fts(query: str, account_email: str | None, limit: int) -> list[dict]
         return [{"error": "no search index found. run build-index to create one."}]
 
     try:
-        results = mgr.search(query, limit=limit)
+        results = mgr.search(query, account=account_email, limit=limit)
     finally:
         mgr.close()
 
@@ -89,16 +89,19 @@ for (var a = 0; a < accounts.length && results.length < limit; a++) {{
     for (var m = 0; m < mboxNames.length && results.length < limit; m++) {{
         if (mboxNames[m].toLowerCase() !== "inbox") continue;
         var mbox = mboxes[m];
-        var data = MailCore.batchFetch(mbox.messages, ["id", "subject", "sender", "dateReceived"]);
+        var folderName = mboxNames[m];
+        var data = MailCore.batchFetch(mbox.messages, ["id", "subject", "sender", "dateReceived", "messageId"]);
         for (var i = 0; i < data.id.length && results.length < limit; i++) {{
             var val = (data.{field}[i] || "").toLowerCase();
             if (val.indexOf(needle) !== -1) {{
                 results.push({{
                     id: String(data.id[i]),
+                    message_id: data.messageId[i] || "",
                     subject: data.subject[i] || "",
                     sender: data.sender[i] || "",
                     date_received: MailCore.formatDate(data.dateReceived[i]) || "",
-                    account_email: accEmail
+                    account_email: accEmail,
+                    folder_name: folderName
                 }});
             }}
         }}

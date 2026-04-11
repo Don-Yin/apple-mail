@@ -27,7 +27,11 @@ JSON.stringify(data);
     try:
         folders = run_jxa_with_core(script)
         return sorted(folders, key=lambda x: x["folder_name"].lower())
-    except (JXAError, TimeoutError):
+    except JXAError as e:
+        if "no account found" in str(e):
+            return {"success": False, "message": f"no account found for email '{account_email}'"}
+        return []
+    except TimeoutError:
         return []
 
 
@@ -75,6 +79,19 @@ JSON.stringify(results);
         results = run_jxa_with_core(script, timeout=60)
     except (JXAError, TimeoutError):
         return []
+
+    # deduplicate by rfc message_id (Exchange sync can create multiple int_ids for same email)
+    if results:
+        seen = set()
+        deduped = []
+        for r in results:
+            mid = r.get("message_id", "")
+            if mid and mid in seen:
+                continue
+            if mid:
+                seen.add(mid)
+            deduped.append(r)
+        results = deduped
 
     if results:
         from ..resolve import upsert_listing_hints

@@ -174,6 +174,9 @@ def cmd_list_folders(args, t0):
     from lib.ops.accounts import list_account_folders
 
     result = list_account_folders(args.account)
+    if isinstance(result, dict) and result.get("success") is False:
+        _output_op(result, "list-folders", t0)
+        return
     _output(_wrap(data=result, command="list-folders", start_time=t0))
 
 
@@ -196,6 +199,9 @@ def cmd_list_emails(args, t0):
         limit=args.limit,
         include_content=args.include_content,
     )
+    if isinstance(result, dict) and result.get("success") is False:
+        _output_op(result, "list-emails", t0)
+        return
     _output(_wrap(data=result, command="list-emails", start_time=t0))
 
 
