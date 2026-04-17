@@ -128,17 +128,18 @@ def _fetch_metadata(eid: int) -> dict | None:
 
 def _fetch_content_with_fallback(eid: int, metadata: dict) -> tuple[str, str]:
     """Phase 2: try JXA content(), then search index, then disk .emlx."""
+    cap = 1_000_000
     content = _try_jxa_content(eid)
     if content:
-        return content, "jxa"
+        return content[:cap], "jxa"
 
     content = _try_search_index(eid, metadata)
     if content:
-        return content, "search_index"
+        return content[:cap], "search_index"
 
     content = _try_disk_emlx(eid)
     if content:
-        return content, "disk"
+        return content[:cap], "disk"
 
     return "", "unavailable"
 

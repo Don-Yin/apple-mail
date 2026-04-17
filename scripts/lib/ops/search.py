@@ -113,7 +113,7 @@ for (var a = 0; a < accounts.length && results.length < limit; a++) {{
         if (mboxNames[m].toLowerCase() !== "inbox") continue;
         var mbox = mboxes[m];
         var folderName = mboxNames[m];
-        var data = MailCore.batchFetch(mbox.messages, ["id", "subject", "sender", "dateReceived", "messageId"]);
+        var data = MailCore.batchFetch(mbox.messages, ["id", "subject", "sender", "dateReceived", "messageId"], 2000);
         for (var i = 0; i < data.id.length && results.length < limit; i++) {{
             var val = (data.{field}[i] || "").toLowerCase();
             if (val.indexOf(needle) !== -1) {{

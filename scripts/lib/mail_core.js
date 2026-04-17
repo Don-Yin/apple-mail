@@ -45,10 +45,12 @@ const MailCore = {
     },
 
     batchFetch(msgs, props, limit) {
+        const MAX_BATCH = 2000;
+        const cap = (limit && limit > 0) ? Math.min(limit, MAX_BATCH) : MAX_BATCH;
         const result = {};
         for (const prop of props) {
             const all = msgs[prop]();
-            result[prop] = (limit && limit > 0) ? all.slice(0, limit) : all;
+            result[prop] = all.slice(0, cap);
         }
         return result;
     },
@@ -163,6 +165,24 @@ const MailCore = {
             }
         }
         return null;
+    },
+
+    moveMessage(msg, destMailbox) {
+        /**move a message to a mailbox; same-account uses property assignment, cross-account uses Mail.move().*/
+        var srcAccId = msg.mailbox().account().id();
+        var destAccId = destMailbox.account().id();
+
+        if (srcAccId === destAccId) {
+            msg.mailbox = destMailbox;
+            return {method: "same_account"};
+        }
+
+        try {
+            Mail.move(msg, {to: destMailbox});
+            return {method: "cross_account"};
+        } catch(e) {
+            return {method: "failed", error: e.message || String(e)};
+        }
     },
 
     resolveByMessageId(messageId, hintAccount, hintMailbox) {

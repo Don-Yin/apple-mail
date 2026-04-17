@@ -201,7 +201,7 @@ if (msg) {{
 }}"""
             result = run_jxa_with_core(script, timeout=15)
             if result and result.get("content"):
-                content = result["content"]
+                content = result["content"][:1_000_000]
                 mgr.cache_content(
                     message_id=msg_id,
                     subject=msg.get("subject", ""),

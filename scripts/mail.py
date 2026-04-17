@@ -6,6 +6,7 @@ Response contract: {success, data, error, warnings, meta}
 """
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -16,6 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 VERSION = "1.0.0"
+_MAIL_LOCK_PATH = Path("/tmp/apple-mail-skill.lock")
+_MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 
 
 def _wrap(data=None, error=None, warnings=None, command="", start_time=None):
@@ -38,7 +41,15 @@ def _error(code: str, message: str, details: dict = None):
 
 
 def _output(result: dict):
-    json.dump(result, sys.stdout, indent=2, default=str)
+    """write json to stdout with 10 MB cap to prevent downstream memory explosion."""
+    raw = json.dumps(result, indent=2, default=str)
+    if len(raw) > _MAX_OUTPUT_BYTES:
+        result = _wrap(
+            error=_error("OUTPUT_TOO_LARGE", f"response would be {len(raw)/1e6:.1f} MB (cap: {_MAX_OUTPUT_BYTES/1e6:.0f} MB). use a smaller --limit"),
+            command=result.get("meta", {}).get("command", ""),
+        )
+        raw = json.dumps(result, indent=2, default=str)
+    sys.stdout.write(raw)
     sys.stdout.write("\n")
     sys.exit(0 if result.get("success") else 1)
 
@@ -646,7 +657,7 @@ if (msg) {{
                                 message_id=mid,
                                 subject="",
                                 sender="",
-                                content=result["content"],
+                                content=result["content"][:1_000_000],
                                 date_received="",
                             )
                             uncommitted += 1
@@ -889,6 +900,24 @@ def main():
     handler = COMMAND_MAP.get(args.command)
 
     if handler:
+        skip_lock = args.command == "_background-index"
+        lock_fd = None
+        if not skip_lock:
+            lock_fd = os.open(str(_MAIL_LOCK_PATH), os.O_RDWR | os.O_CREAT)
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except (OSError, BlockingIOError):
+                    if time.monotonic() > deadline:
+                        os.close(lock_fd)
+                        _output(_wrap(
+                            error=_error("LOCK_TIMEOUT", "another mail command has held the lock for >30s"),
+                            command=args.command, start_time=t0,
+                        ))
+                        return
+                    time.sleep(0.5)
         try:
             handler(args, t0)
         except Exception as e:
@@ -897,6 +926,10 @@ def main():
                 command=args.command,
                 start_time=t0,
             ))
+        finally:
+            if lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
     else:
         parser.print_help()
         sys.exit(1)

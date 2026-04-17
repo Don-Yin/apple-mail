@@ -526,7 +526,7 @@ for (var a = 0; a < accounts.length; a++) {{
         totalCount += mbox.messages.id().length;
         var data = MailCore.batchFetch(mbox.messages, [
             "id", "subject", "sender", "dateReceived", "messageId"
-        ]);
+        ], limit);
         var count = Math.min(data.id.length, limit - results.length);
         for (var i = 0; i < count; i++) {{
             results.push({{
