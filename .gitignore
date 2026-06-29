@@ -18,4 +18,11 @@ scripts/lib/search_index/*.db
 # Keep the assets directory itself
 !assets/.gitkeep
 
+# Local editor/agent state; .cursor may be a symlink outside this repo.
+.cursor
 .cursor/
+agents/
+
+# Local/experimental online sync backend. Keep out of the public skill until
+# it has a separate security and university-account review.
+scripts/lib/ops/imap_sync.py
