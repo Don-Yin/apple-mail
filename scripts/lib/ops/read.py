@@ -1,16 +1,16 @@
-"""Email retrieval using JXA direct ID lookup, with cache-on-read.
+"""Email retrieval using JXA metadata lookup with safe content sources.
 
-read_full_email splits into two phases so a slow msg.content() call
-(large HTML, inline images, Exchange sync stall) never blocks the
-metadata that is always fast:
+read_full_email splits metadata and content so cache misses do not block
+basic message inspection:
 
   Phase 1 - metadata: subject, sender, dates, recipients, attachments (~0.5 s)
-  Phase 2 - content:  JXA content() (10 s cap) -> search index -> disk .emlx
+  Phase 2 - content:  search index -> disk .emlx -> unavailable
 """
+
+from __future__ import annotations
 
 from ..jxa import run_jxa_with_core, JXAError
 
-_CONTENT_JXA_TIMEOUT = 10
 _METADATA_JXA_TIMEOUT = 15
 
 
@@ -32,8 +32,8 @@ def read_full_email(identifier: str) -> dict:
 
     if not content:
         result["content_note"] = (
-            "Content could not be retrieved (possible causes: large HTML body, "
-            "inline images, or Exchange sync delay). Try again later or view "
+            "Content was not available from the safe search index or disk cache. "
+            "Run build-index before a deeper triage session, or view the message "
             "directly in Mail.app."
         )
 
@@ -127,12 +127,8 @@ def _fetch_metadata(eid: int) -> dict | None:
 
 
 def _fetch_content_with_fallback(eid: int, metadata: dict) -> tuple[str, str]:
-    """Phase 2: try JXA content(), then search index, then disk .emlx."""
+    """Phase 2: try indexed/disk content without Mail.app body extraction."""
     cap = 1_000_000
-    content = _try_jxa_content(eid)
-    if content:
-        return content[:cap], "jxa"
-
     content = _try_search_index(eid, metadata)
     if content:
         return content[:cap], "search_index"
@@ -142,24 +138,6 @@ def _fetch_content_with_fallback(eid: int, metadata: dict) -> tuple[str, str]:
         return content[:cap], "disk"
 
     return "", "unavailable"
-
-
-def _try_jxa_content(eid: int) -> str:
-    """Attempt to get content via JXA msg.content() with a short timeout."""
-    script = f"""
-var msg = MailCore.findMessageAcrossAccounts({eid});
-if (msg) {{
-    var content = "";
-    try {{ content = msg.content() || ""; }} catch(e) {{}}
-    JSON.stringify({{content: content}});
-}} else {{
-    JSON.stringify({{content: ""}});
-}}"""
-    try:
-        result = run_jxa_with_core(script, timeout=_CONTENT_JXA_TIMEOUT)
-        return (result or {}).get("content", "")
-    except (TimeoutError, JXAError):
-        return ""
 
 
 def _try_search_index(eid: int, metadata: dict) -> str:

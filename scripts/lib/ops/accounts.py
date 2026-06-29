@@ -42,44 +42,38 @@ def list_recent_emails(most_recent_n_emails: int = 128, include_content: bool = 
     """List recent emails from all account inboxes."""
     limit = most_recent_n_emails if most_recent_n_emails is not None else 200
     script = f"""
-var accounts = Mail.accounts();
-var accNames = Mail.accounts.name();
-var accEmails = Mail.accounts.emailAddresses();
+// enumerate the unified inbox's per-account children. this is language-proof
+// (covers localized names like 收件箱, which the old `name == "inbox"` filter
+// silently skipped) and is exactly the inbox set Mail.app's UI shows.
+var inboxes = Mail.inbox.mailboxes();
 var results = [];
 var totalInbox = 0;
 var truncated = false;
 var limit = {limit};
 
-for (var a = 0; a < accounts.length; a++) {{
-    var acct = accounts[a];
-    var accEmail = accEmails[a].length > 0 ? accEmails[a][0] : accNames[a];
-    var mboxNames = acct.mailboxes.name();
-    var mboxes = acct.mailboxes();
-
-    for (var m = 0; m < mboxNames.length; m++) {{
-        if (mboxNames[m].toLowerCase() !== "inbox") continue;
-        var mbox = mboxes[m];
-        var folderName = mboxNames[m];
-        var allIds = mbox.messages.id();
-        var inboxCount = allIds.length;
-        totalInbox += inboxCount;
-        var data = MailCore.batchFetch(mbox.messages, [
-            "id", "subject", "sender", "dateReceived", "messageId"
-        ], limit);
-        var count = data.id.length;
-        if (limit > 0 && inboxCount > count) truncated = true;
-        for (var i = 0; i < count; i++) {{
-            results.push({{
-                id: String(data.id[i]),
-                message_id: data.messageId[i] || "",
-                subject: data.subject[i] || "",
-                sender: data.sender[i] || "",
-                date_received: MailCore.formatDate(data.dateReceived[i]) || "",
-                account_email: accEmail,
-                folder_name: folderName
-            }});
-        }}
-        break;
+for (var a = 0; a < inboxes.length; a++) {{
+    var mbox = inboxes[a];
+    var acct = mbox.account();
+    var accEmails = acct.emailAddresses();
+    var accEmail = accEmails.length > 0 ? accEmails[0] : acct.name();
+    var folderName = mbox.name();
+    var inboxCount = mbox.messages.id().length;
+    totalInbox += inboxCount;
+    var data = MailCore.batchFetch(mbox.messages, [
+        "id", "subject", "sender", "dateReceived", "messageId"
+    ], limit);
+    var count = data.id.length;
+    if (inboxCount > count) truncated = true;  // honest even when limit == 0
+    for (var i = 0; i < count; i++) {{
+        results.push({{
+            id: String(data.id[i]),
+            message_id: data.messageId[i] || "",
+            subject: data.subject[i] || "",
+            sender: data.sender[i] || "",
+            date_received: MailCore.formatDate(data.dateReceived[i]) || "",
+            account_email: accEmail,
+            folder_name: folderName
+        }});
     }}
 }}
 JSON.stringify({{emails: results, total_inbox: totalInbox, truncated: truncated}});
@@ -130,8 +124,23 @@ JSON.stringify({{emails: results, total_inbox: totalInbox, truncated: truncated}
     meta = {"total_inbox": total_inbox, "showing": showing}
     if deduped_removed > 0:
         meta["duplicates_removed"] = deduped_removed
-    if truncated:
-        meta["note"] = f"showing {showing} of {total_inbox} inbox emails (limit={limit}). use --limit 0 to fetch all."
+
+    # coverage invariant: assert every inbox message was actually fetched. compare
+    # rows fetched (pre-dedup) against the true inbox total, in python, independent
+    # of the JXA flag. an explicit small --limit is an expected note; a shortfall at
+    # --limit 0 means we hit the 2000-per-mailbox batch ceiling and is a hard warning
+    # (the response contract's warnings[] field), so coverage loss can never be silent.
+    fetched = pre_dedup_count
+    dropped = total_inbox - fetched
+    if dropped > 0:
+        if limit and limit > 0:
+            meta["note"] = f"showing {showing} of {total_inbox} inbox emails (limit={limit}). use --limit 0 to fetch all."
+        else:
+            meta["coverage_warnings"] = [
+                f"INCOMPLETE COVERAGE: fetched {fetched} of {total_inbox} inbox messages; "
+                f"{dropped} dropped at the 2000-per-mailbox batch ceiling. results are NOT complete "
+                f"-- narrow by folder/account or paginate."
+            ]
 
     if include_content and results:
         enriched = enrich_with_content(results)

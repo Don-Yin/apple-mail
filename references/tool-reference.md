@@ -12,12 +12,34 @@ All output is JSON with the response contract: `{success, data, error, warnings,
 No parameters. Returns skill version and metadata.
 
 ```json
-{"name": "apple-mail-skill", "version": "1.0.0", "total_commands": 19}
+{"name": "apple-mail-skill", "version": "1.1.0", "default_draft_backend": "mailapp", "local_mail_mutation_safety_envelope": true}
 ```
 
 ## check-health
 
 No parameters. Returns `{success: bool, message: str}`.
+
+## local-mutation-preflight
+
+No parameters. Non-destructive check for the local Mail mutation safety envelope. It verifies Mail health before and after a no-op action, captures/restores the foreground app, snapshots Mail crash reports, and returns `local_mail_safety` metadata.
+
+This command does not authorize or perform a mailbox mutation. Run it before any live local mutation E2E test.
+
+## generated local mutation E2E
+
+Developer script, not a normal mail command:
+
+```bash
+APPLE_MAIL_ALLOW_LIVE_E2E=1 \
+APPLE_MAIL_ALLOW_UI_MUTATION=1 \
+APPLE_MAIL_ALLOW_LOCAL_MUTATION_E2E=1 \
+scripts/dev/local_mutation_e2e.py full \
+  --account EMAIL \
+  --to TEST_RECIPIENT \
+  --move-folder EXISTING_FOLDER
+```
+
+The script uses generated subject canaries only. It verifies draft create, draft amend, draft delete, send, move to an existing folder, delete generated message, focus restoration, pre/post Mail health, and Mail crash-report deltas. It writes a JSON log under `${TMPDIR:-/tmp}/apple-mail-local-mutation-e2e/`.
 
 ## list-accounts
 
@@ -43,7 +65,7 @@ Returns sorted list of folders:
 
 | Param | Required | Default | Description |
 |---|---|---|---|
-| `--limit N` | no | 20 | Max emails per inbox |
+| `--limit N` | no | 128 | Max emails per inbox |
 | `--include-content` | no | false | Add preview from search index |
 
 Without `--include-content`: returns list of email dicts.
@@ -63,14 +85,13 @@ With `--include-content`: returns enrichment wrapper:
   ],
   "preview_coverage": {"covered": 18, "total": 20, "percentage": 90.0},
   "index_age": {"iso": "2026-02-23T10:30:00", "relative": "2 minutes ago"},
-  "note": "Previews are first ~5000 chars only (not full content). Use read-email for complete content.",
-  "background_indexing": {"status": "running", "remaining": 2, "check_command": "..."}
+  "note": "Previews are first ~5000 chars only (not full content). Use read-email for cached/disk content, or build-index for deeper triage."
 }
 ```
 
 Per-message preview fields:
 - `preview`: first 5000 chars of body, newlines replaced with spaces. Empty string if unavailable.
-- `preview_source`: `"indexed"` | `"not_indexed"` | `"background_indexing"`
+- `preview_source`: `"indexed"` | `"not_indexed"`
 - `preview_truncated`: true if original content > 5000 chars
 - `preview_available`: explicit boolean for agent branching
 
@@ -80,7 +101,7 @@ Per-message preview fields:
 |---|---|---|---|
 | `--account EMAIL` | yes | — | Account email address |
 | `--folder NAME` | yes | — | Folder name (case-insensitive) |
-| `--limit N` | no | 50 | Max emails |
+| `--limit N` | no | 128 | Max emails |
 | `--include-content` | no | false | Add preview from search index |
 
 Same return shape as `list-recent`.
@@ -89,7 +110,7 @@ Same return shape as `list-recent`.
 
 | Param | Required | Default | Description |
 |---|---|---|---|
-| `--limit N` | no | 50 | Max drafts |
+| `--limit N` | no | 128 | Max drafts |
 | `--include-content` | no | false | Add preview from search index |
 
 Same return shape as `list-recent`.
@@ -108,7 +129,7 @@ Returns full email:
 ```json
 {
   "id": "1234", "subject": "...", "content": "full body...",
-  "content_source": "jxa",
+  "content_source": "search_index",
   "sender": "...", "sender_name": "...",
   "date_received": "...", "date_sent": "...",
   "read_status": true, "flagged_status": false,
@@ -120,10 +141,10 @@ Returns full email:
 
 Content retrieval uses a two-phase approach for resilience:
 - **Phase 1** (always fast): metadata, recipients, attachments via JXA (~0.5 s)
-- **Phase 2** (cascading fallback): JXA `content()` (10 s cap) → search index → disk `.emlx`
+- **Phase 2** (safe content lookup): search index -> disk `.emlx` -> unavailable
 
-`content_source` values: `"jxa"` | `"search_index"` | `"disk"` | `"unavailable"`.
-When `"unavailable"`, `content_note` explains why (large HTML, Exchange sync stall, etc.).
+`content_source` values: `"search_index"` | `"disk"` | `"unavailable"`.
+When `"unavailable"`, `content_note` explains that full content was not available from the safe cache/disk paths. do not retry in a loop; run `build-index` before a deeper triage session or ask the user to inspect the email in Mail.app.
 
 On stale ID: `error.code = "EMAIL_NOT_FOUND"` with `error.details.recovery` containing a relist command.
 
@@ -151,8 +172,13 @@ Returns list of result dicts with `id`, `subject`, `sender`, `date_received`, `s
 | `--cc ADDR...` | no | CC recipient(s) |
 | `--bcc ADDR...` | no | BCC recipient(s) |
 | `--attachments PATH...` | no | File paths to attach |
+| `--backend artifact\|mailapp` | no | `mailapp` is the production default: hidden synced Apple Mail draft. `artifact` writes a no-Mail `.eml` + manifest |
+| `--output-dir DIR` | no | Artifact backend output directory; default `~/Documents/apple-mail-draft-artifacts` |
+| `--allow-live-mail-mutation` | no | Ignored for default compose; reserved for development-only mutation commands |
 
-Returns `{success, message}`. Always re-list drafts to get the stable draft ID.
+Default production behavior creates a hidden Apple Mail outgoing message with `visible:false`, saves it to drafts, restores the previous foreground app, and lets the configured Mail account sync it to Outlook/Exchange if that account normally syncs drafts. Returns fields including `backend: "mailapp"`, `mail_app_written: true`, and `visible: false`. Verify with `list-drafts` after a short delay; do not use delete cleanup through Mail.app scripting.
+
+`--backend artifact` writes an RFC 5322 `.eml` plus a JSON manifest and does not open or modify Mail.app. Returns fields including `backend`, `eml_path`, `manifest_path`, `message_id`, and `mail_app_written: false`. Verify with filesystem checks, not `list-drafts`.
 
 ## amend-draft
 
@@ -164,14 +190,18 @@ Returns `{success, message}`. Always re-list drafts to get the stable draft ID.
 | `--cc ADDR...` | no | Replace CC list |
 | `--bcc ADDR...` | no | Replace BCC list |
 | `--attachments PATH...` | no | Additional attachments |
+| `--allow-live-mail-mutation` | no | Development-only override |
 
-Only provided fields are changed.
+Live Mail.app mutation. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. Do not use in production; create a new hidden synced draft with `compose-draft` instead.
 
 ## send-draft
 
 | Param | Required | Description |
 |---|---|---|
 | `--id ID` | yes | Draft ID |
+| `--allow-live-mail-mutation` | no | Development-only override |
+
+Live Mail.app send. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. Do not use in production.
 
 ## reply-draft
 
@@ -184,8 +214,10 @@ Only provided fields are changed.
 | `--cc ADDR...` | no | Additional CC |
 | `--bcc ADDR...` | no | Additional BCC |
 | `--attachments PATH...` | no | File paths to attach |
+| `--allow-live-mail-mutation` | no | Development-only override |
 
 Provide one of `--message-id` or `--id`.
+Live Mail.app reply draft. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. In production, compose a new hidden synced reply draft with `compose-draft` instead.
 
 ## forward-draft
 
@@ -199,23 +231,30 @@ Provide one of `--message-id` or `--id`.
 | `--cc ADDR...` | no | CC recipient(s) |
 | `--bcc ADDR...` | no | BCC recipient(s) |
 | `--attachments PATH...` | no | File paths to attach |
+| `--allow-live-mail-mutation` | no | Development-only override |
 
 Provide one of `--message-id` or `--id`.
+Live Mail.app forward draft. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. In production, compose a new hidden synced forward draft with `compose-draft` instead.
 
 ## delete-email
 
 | Param | Required | Description |
 |---|---|---|
 | `--message-ids MID...` | no | RFC 2822 message-id(s) (preferred, stable across syncs) |
-| `--ids ID...` | no | Email integer ID(s) (fallback) |
+| `--ids ID...` | no | Email integer ID(s) -- UNSAFE: ids shift/collide; gated (see below) |
+| `--force-int-ids` | no | opt-in required to delete by raw `--ids` |
+| `--allow-live-mail-mutation` | no | Development-only override |
 
-Provide one of `--message-ids` or `--ids`. Single ID returns `{success, message}`. Multiple IDs returns `{success, deleted, requested, not_found, message}`.
+Live Mail.app deletion. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. Do not use in production; use provider/API deletion instead. If enabled for development, provide `--message-ids` where possible. Raw `--ids` is additionally refused with `UNSAFE_INT_IDS` unless `--force-int-ids` is passed.
 
 ## delete-draft
 
 | Param | Required | Description |
 |---|---|---|
 | `--id ID` | yes | Draft ID |
+| `--allow-live-mail-mutation` | no | Development-only override |
+
+Live Mail.app draft deletion. Disabled by default with `MAIL_UI_MUTATION_DISABLED`.
 
 ## move-email
 
@@ -224,24 +263,26 @@ Provide one of `--message-ids` or `--ids`. Single ID returns `{success, message}
 | `--message-id MID` | no | RFC 2822 message-id (preferred, stable across syncs) |
 | `--id ID` | no | Email integer ID (fallback) |
 | `--to FOLDER` | yes | Destination folder name (just the name, not path) |
+| `--to-account EMAIL` | no | Destination account for cross-account moves |
+| `--allow-live-mail-mutation` | no | Development-only override |
 
-Provide one of `--message-id` or `--id`. Searches folders recursively. Exchange accounts need ~3 s sync.
+Live Mail.app move. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. Do not use in production; use provider/API move instead.
+
+## batch-move
+
+| Param | Required | Description |
+|---|---|---|
+| `--message-ids MID...` | no | RFC 2822 message-id(s) (preferred, stable across syncs) |
+| `--ids ID...` | no | Email integer ID(s) |
+| `--to FOLDER` | yes | Destination folder name |
+| `--to-account EMAIL` | no | Destination account for cross-account moves |
+| `--allow-live-mail-mutation` | no | Development-only override |
+
+Live Mail.app batch move. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. Do not use in production; use provider/API move instead.
 
 ## build-index
 
 No parameters. Full FTS5 rebuild from disk. Requires Full Disk Access. Returns `{indexed, mailboxes, elapsed_seconds, db_size_mb}`.
-
-## index-status
-
-No parameters. Returns background indexing state:
-
-```json
-{"status": "running|done|failed|cancelled|stale|not_running", "total": 18, "completed": 12, "percentage": 66.7}
-```
-
-## index-cancel
-
-No parameters. Sends SIGTERM/SIGKILL to background worker, marks status as cancelled.
 
 ---
 
@@ -256,8 +297,7 @@ No parameters. Sends SIGTERM/SIGKILL to background worker, marks status as cance
 | `INVALID_ID` | non-numeric ID |
 | `MISSING_ID` | neither --id nor --message-id provided |
 | `JXA_TIMEOUT` | Mail.app unresponsive |
-| `LOCK_TIMEOUT` | index lock contention |
-| `PROGRESS_CORRUPTED` | index-progress.json unreadable |
+| `LOCK_TIMEOUT` | another mail command has held the runtime lock for too long |
 | `DISK_FULL` | write failed due to disk space |
 | `MICROMAMBA_NOT_FOUND` | launcher bootstrap failure |
 | `INTERNAL_ERROR` | unhandled exception |

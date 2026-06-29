@@ -10,6 +10,7 @@ from ..applescript import (
     build_attachments,
     sync_mail_state,
 )
+from .mutation_guard import require_live_mail_mutation, run_guarded_local_mail_mutation
 
 
 def _build_find_block(identifier: str) -> str:
@@ -17,21 +18,11 @@ def _build_find_block(identifier: str) -> str:
     return f"""
             set targetId to {identifier} as integer
 
-            repeat with acc in accounts
-                repeat with mbox in mailboxes of acc
-                    ignoring case
-                        set isInbox to (name of mbox is "inbox")
-                    end ignoring
-                    if isInbox then
-                        set msgList to (messages of mbox whose id is targetId)
-                        if (count of msgList) > 0 then
-                            set foundEmail to item 1 of msgList
-                            exit repeat
-                        end if
-                    end if
-                end repeat
-                if foundEmail is not missing value then exit repeat
-            end repeat
+            -- phase 1: unified inbox (locale-proof: covers Inbox/INBOX/收件箱)
+            set msgList to (messages of inbox whose id is targetId)
+            if (count of msgList) > 0 then
+                set foundEmail to item 1 of msgList
+            end if
 
             if foundEmail is missing value then
                 repeat with acc in accounts
@@ -58,6 +49,10 @@ def make_forward_draft(
     new_attachments: list[str] = None,
 ) -> dict:
     """create a forward draft from an existing email."""
+    guard = require_live_mail_mutation("forward-draft")
+    if guard:
+        return guard
+
     try:
         email_id = validate_id(email_id, "email_id")
     except ValueError as e:
@@ -119,9 +114,8 @@ def make_forward_draft(
             end if
 
             set originalSubject to subject of foundEmail
-            set originalContent to content of foundEmail
             set forwardSubject to "Fwd: " & originalSubject
-            set forwardContent to "{body_escaped}" & return & return & "------- Forwarded Message -------" & return & return & originalContent
+            set forwardContent to "{body_escaped}"
 
             set newMessage to make new outgoing message with properties {{sender:"{account_escaped}", subject:forwardSubject, content:forwardContent, visible:false}}
             {to_section}{cc_section}{bcc_section}
@@ -153,20 +147,23 @@ def make_forward_draft(
         """
     )
 
-    try:
-        result = run_applescript(script)
-    except TimeoutError as e:
-        return {"success": False, "message": str(e)}
-    except RuntimeError as e:
-        return {"success": False, "message": str(e)}
+    def action() -> dict:
+        try:
+            result = run_applescript(script, preserve_focus=True)
+        except TimeoutError as e:
+            return {"success": False, "message": str(e)}
+        except RuntimeError as e:
+            return {"success": False, "message": str(e)}
 
-    output = result.stdout.strip()
+        output = result.stdout.strip()
 
-    if output == "EMAIL_NOT_FOUND":
-        return {"success": False, "message": f"original email with id {email_id} not found"}
-    if output == "ACCOUNT_NOT_FOUND":
-        return {"success": False, "message": f"account {account} not found"}
-    if output == "SUCCESS":
-        sync_mail_state()
-        return {"success": True, "message": "forward draft created successfully - query drafts after a delay to get stable id"}
-    return {"success": False, "message": f"unexpected output: {output}"}
+        if output == "EMAIL_NOT_FOUND":
+            return {"success": False, "message": f"original email with id {email_id} not found"}
+        if output == "ACCOUNT_NOT_FOUND":
+            return {"success": False, "message": f"account {account} not found"}
+        if output == "SUCCESS":
+            sync_mail_state(preserve_focus=True)
+            return {"success": True, "message": "forward draft created successfully - query drafts after a delay to get stable id"}
+        return {"success": False, "message": f"unexpected output: {output}"}
+
+    return run_guarded_local_mail_mutation("forward-draft", action)
