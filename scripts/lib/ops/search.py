@@ -85,48 +85,46 @@ def _search_jxa_field(query: str, field: str, account_email: str | None, limit: 
     """Search inbox by subject or sender using JXA whose-clause filtering."""
     safe_query = json.dumps(query.lower())
 
-    if account_email:
-        safe_email = json.dumps(account_email)
-        acct_line = f"var acct = MailCore.getAccountByEmail({safe_email});\nvar accounts = [acct];"
-    else:
-        acct_line = "var accounts = Mail.accounts();"
+    acct_filter = json.dumps(account_email) if account_email else "null"
 
+    # enumerate the unified inbox's per-account children (locale-proof: covers Inbox /
+    # INBOX / 收件箱), mirroring list-recent. the old `name === "inbox"` filter silently
+    # returned zero hits from a localized inbox.
     script = f"""
-{acct_line}
-var accEmails = Mail.accounts.emailAddresses();
-var accNames = Mail.accounts.name();
 var results = [];
 var limit = {limit};
 var needle = {safe_query};
+var filterEmail = {acct_filter};
+var inboxes = Mail.inbox.mailboxes();
 
-for (var a = 0; a < accounts.length && results.length < limit; a++) {{
-    var acct = accounts[a];
-    var accEmail = "";
-    try {{
-        var addrs = acct.emailAddresses();
-        accEmail = addrs.length > 0 ? addrs[0] : acct.name();
-    }} catch(e) {{ accEmail = acct.name(); }}
-    var mboxNames = acct.mailboxes.name();
-    var mboxes = acct.mailboxes();
-
-    for (var m = 0; m < mboxNames.length && results.length < limit; m++) {{
-        if (mboxNames[m].toLowerCase() !== "inbox") continue;
-        var mbox = mboxes[m];
-        var folderName = mboxNames[m];
-        var data = MailCore.batchFetch(mbox.messages, ["id", "subject", "sender", "dateReceived", "messageId"], 2000);
-        for (var i = 0; i < data.id.length && results.length < limit; i++) {{
-            var val = (data.{field}[i] || "").toLowerCase();
-            if (val.indexOf(needle) !== -1) {{
-                results.push({{
-                    id: String(data.id[i]),
-                    message_id: data.messageId[i] || "",
-                    subject: data.subject[i] || "",
-                    sender: data.sender[i] || "",
-                    date_received: MailCore.formatDate(data.dateReceived[i]) || "",
-                    account_email: accEmail,
-                    folder_name: folderName
-                }});
-            }}
+for (var a = 0; a < inboxes.length && results.length < limit; a++) {{
+    var mbox = inboxes[a];
+    var acct = mbox.account();
+    var accEmails = acct.emailAddresses();
+    var accEmail = accEmails.length > 0 ? accEmails[0] : acct.name();
+    if (filterEmail) {{
+        // match ANY of the account's addresses (mirror getAccountByEmail), not just
+        // the primary -- a multi-alias account queried by a secondary address must hit.
+        var matchAcct = false;
+        for (var fe = 0; fe < accEmails.length; fe++) {{
+            if (accEmails[fe].toLowerCase() === filterEmail.toLowerCase()) {{ matchAcct = true; break; }}
+        }}
+        if (!matchAcct) continue;
+    }}
+    var folderName = mbox.name();
+    var data = MailCore.batchFetch(mbox.messages, ["id", "subject", "sender", "dateReceived", "messageId"], 2000);
+    for (var i = 0; i < data.id.length && results.length < limit; i++) {{
+        var val = (data.{field}[i] || "").toLowerCase();
+        if (val.indexOf(needle) !== -1) {{
+            results.push({{
+                id: String(data.id[i]),
+                message_id: data.messageId[i] || "",
+                subject: data.subject[i] || "",
+                sender: data.sender[i] || "",
+                date_received: MailCore.formatDate(data.dateReceived[i]) || "",
+                account_email: accEmail,
+                folder_name: folderName
+            }});
         }}
     }}
 }}

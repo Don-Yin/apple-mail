@@ -1,202 +1,76 @@
-"""Email move operations (single and batch)."""
+"""Email move operations (single and batch) via JXA."""
 
-import textwrap
-from ..applescript import validate_id, escape_applescript, run_applescript, sync_mail_state, build_find_by_int_block
-
-
-def _dest_account_block(account_email: str = None) -> str:
-    """build applescript fragment to resolve the destination account."""
-    if account_email:
-        escaped = escape_applescript(account_email)
-        return f'''
-            set destAccount to missing value
-            set targetEmail to "{escaped}"
-            repeat with acc in accounts
-                set accEmails to email addresses of acc
-                repeat with addr in accEmails
-                    if (contents of addr) is targetEmail then
-                        set destAccount to acc
-                        exit repeat
-                    end if
-                end repeat
-                if destAccount is not missing value then exit repeat
-            end repeat
-            if destAccount is missing value then
-                return "DEST_ACCOUNT_NOT_FOUND"
-            end if'''
-    return "set destAccount to sourceAccount"
-
-
-def _folder_search_block(folder: str) -> str:
-    """build applescript BFS fragment to find a mailbox by name under destAccount."""
-    escaped = escape_applescript(folder)
-    return f'''
-            set targetMailbox to missing value
-            set mailboxQueue to mailboxes of destAccount
-            repeat while (count of mailboxQueue) > 0
-                set currentMbox to item 1 of mailboxQueue
-                try
-                    ignoring case
-                        set folderMatch to ((name of currentMbox) is "{escaped}")
-                    end ignoring
-                    if folderMatch then
-                        set targetMailbox to currentMbox
-                        exit repeat
-                    end if
-                    set subMailboxes to mailboxes of currentMbox
-                    repeat with subMbox in subMailboxes
-                        set end of mailboxQueue to subMbox
-                    end repeat
-                end try
-                set mailboxQueue to rest of mailboxQueue
-            end repeat
-            if targetMailbox is missing value then
-                return "FOLDER_NOT_FOUND"
-            end if'''
+import json
+from ..jxa import run_jxa_with_core, JXAError
+from ..applescript import validate_id, sync_mail_state
+from .mutation_guard import require_live_mail_mutation, run_guarded_local_mail_mutation
 
 
 def move_email(identifier: str, to_folder: str, to_account: str = None) -> dict:
     """move an email to a specific folder, optionally across accounts."""
+    guard = require_live_mail_mutation("move-email")
+    if guard:
+        return guard
+
     try:
         identifier = validate_id(identifier, "email_id")
     except ValueError as e:
         return {"success": False, "message": str(e)}
 
-    find_block = build_find_by_int_block(identifier)
-    dest_block = _dest_account_block(to_account)
-    folder_block = _folder_search_block(to_folder)
+    safe_folder = json.dumps(to_folder)
+    safe_account = json.dumps(to_account) if to_account else "null"
 
-    script = textwrap.dedent(
-        f"""
-        tell application "Mail"
-            set foundMessage to missing value
-            set sourceAccount to missing value
-{find_block}
-            if foundMessage is missing value then
-                return "EMAIL_NOT_FOUND"
-            end if
-            {dest_block}
-            {folder_block}
-            move foundMessage to targetMailbox
-            return "SUCCESS"
-        end tell
-        """
-    )
+    script = f"""
+var _r;
+var msg = MailCore.findMessageAcrossAccounts({identifier});
+if (!msg) {{
+    _r = {{success: false, error: "EMAIL_NOT_FOUND"}};
+}} else {{
+    try {{
+        var destAcc = {safe_account} ? MailCore.getAccountByEmail({safe_account}) : msg.mailbox().account();
+        var destMbox = MailCore.getMailbox(destAcc, {safe_folder});
+        var moveResult = MailCore.moveMessage(msg, destMbox);
+        _r = {{success: moveResult.method !== "failed", method: moveResult.method, error: moveResult.error || null}};
+    }} catch(e) {{
+        var code = e.message && e.message.indexOf("no account") >= 0 ? "DEST_ACCOUNT_NOT_FOUND" : "FOLDER_NOT_FOUND";
+        _r = {{success: false, error: code, detail: e.message}};
+    }}
+}}
+JSON.stringify(_r);"""
 
-    try:
-        result = run_applescript(script)
-    except (TimeoutError, RuntimeError) as e:
-        return {"success": False, "message": str(e)}
+    def action() -> dict:
+        try:
+            result = run_jxa_with_core(script)
+        except (TimeoutError, JXAError) as e:
+            return {"success": False, "message": str(e)}
 
-    output = result.stdout.strip()
-    match output:
-        case "EMAIL_NOT_FOUND":
-            return {"success": False, "message": f"email with id {identifier} not found"}
-        case "DEST_ACCOUNT_NOT_FOUND":
-            return {"success": False, "message": f"no account found for email '{to_account}'"}
-        case "FOLDER_NOT_FOUND":
-            dest = f" (searched {to_account})" if to_account else ""
-            return {"success": False, "message": f"folder '{to_folder}' not found{dest}"}
-        case "SUCCESS":
-            sync_mail_state(delay_seconds=1.0)
-            dest = f"{to_account}/{to_folder}" if to_account else to_folder
-            return {"success": True, "message": f"email moved to {dest} successfully"}
-        case _:
-            return {"success": False, "message": f"unexpected output: {output}"}
+        if not result.get("success"):
+            error = result.get("error", "unknown")
+            detail = result.get("detail", "")
+            match error:
+                case "EMAIL_NOT_FOUND":
+                    return {"success": False, "message": f"email with id {identifier} not found"}
+                case "DEST_ACCOUNT_NOT_FOUND":
+                    return {"success": False, "message": f"no account found for email '{to_account}'"}
+                case "FOLDER_NOT_FOUND":
+                    dest = f" (searched {to_account})" if to_account else ""
+                    return {"success": False, "message": f"folder '{to_folder}' not found{dest}"}
+                case _:
+                    return {"success": False, "message": f"move failed: {detail or error}"}
 
+        sync_mail_state(delay_seconds=1.0, preserve_focus=True)
+        dest = f"{to_account}/{to_folder}" if to_account else to_folder
+        return {"success": True, "message": f"email moved to {dest} successfully", "method": result.get("method")}
 
-def _build_batch_move_script(email_ids: list[str], folder: str, account: str = None) -> str:
-    """build applescript to batch-move emails by integer ids to a folder."""
-    ids_literal = ", ".join(email_ids)
-    folder_escaped = escape_applescript(folder)
-
-    if account:
-        dest_escaped = escape_applescript(account)
-        dest_block = f"""
-            set destAccount to missing value
-            set targetEmail to "{dest_escaped}"
-            repeat with acc in accounts
-                set accEmails to email addresses of acc
-                repeat with addr in accEmails
-                    if (contents of addr) is targetEmail then
-                        set destAccount to acc
-                        exit repeat
-                    end if
-                end repeat
-                if destAccount is not missing value then exit repeat
-            end repeat
-            if destAccount is missing value then
-                return "DEST_ACCOUNT_NOT_FOUND|||"
-            end if"""
-    else:
-        dest_block = "set destAccount to first account"
-
-    return textwrap.dedent(
-        f"""
-        tell application "Mail"
-            set targetIds to {{{ids_literal}}}
-            set movedCount to 0
-            set notFoundIds to {{}}
-            {dest_block}
-
-            -- find destination folder via BFS
-            set targetMailbox to missing value
-            set mailboxQueue to mailboxes of destAccount
-            repeat while (count of mailboxQueue) > 0
-                set currentMbox to item 1 of mailboxQueue
-                try
-                    ignoring case
-                        set folderMatch to ((name of currentMbox) is "{folder_escaped}")
-                    end ignoring
-                    if folderMatch then
-                        set targetMailbox to currentMbox
-                        exit repeat
-                    end if
-                    set subMailboxes to mailboxes of currentMbox
-                    repeat with subMbox in subMailboxes
-                        set end of mailboxQueue to subMbox
-                    end repeat
-                end try
-                set mailboxQueue to rest of mailboxQueue
-            end repeat
-            if targetMailbox is missing value then
-                return "FOLDER_NOT_FOUND|||"
-            end if
-
-            -- move each email
-            repeat with tid in targetIds
-                set targetId to tid as integer
-                set foundMessage to missing value
-                repeat with acc in accounts
-                    repeat with mbox in mailboxes of acc
-                        set msgList to (messages of mbox whose id is targetId)
-                        if (count of msgList) > 0 then
-                            set foundMessage to item 1 of msgList
-                            exit repeat
-                        end if
-                    end repeat
-                    if foundMessage is not missing value then exit repeat
-                end repeat
-                if foundMessage is not missing value then
-                    move foundMessage to targetMailbox
-                    set movedCount to movedCount + 1
-                else
-                    set end of notFoundIds to (tid as string)
-                end if
-            end repeat
-
-            set oldDelimiters to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to ","
-            set notFoundStr to notFoundIds as string
-            set AppleScript's text item delimiters to oldDelimiters
-            return (movedCount as string) & "|||" & notFoundStr
-        end tell
-        """
-    )
+    return run_guarded_local_mail_mutation("move-email", action)
 
 
 def batch_move_emails(identifiers: list[str], to_folder: str, to_account: str = None) -> dict:
-    """batch-move emails to a folder in a single applescript call."""
+    """batch-move emails to a folder via JXA with JSON output."""
+    guard = require_live_mail_mutation("batch-move")
+    if guard:
+        return guard
+
     try:
         validated = [validate_id(eid) for eid in identifiers]
     except ValueError as e:
@@ -204,34 +78,71 @@ def batch_move_emails(identifiers: list[str], to_folder: str, to_account: str = 
     if not validated:
         return {"success": False, "message": "no email ids provided", "moved": 0, "requested": 0, "not_found": []}
 
-    script = _build_batch_move_script(validated, to_folder, account=to_account)
+    ids_js = "[" + ",".join(validated) + "]"
+    safe_folder = json.dumps(to_folder)
+    safe_account = json.dumps(to_account) if to_account else "null"
     count = len(validated)
 
-    try:
-        result = run_applescript(script)
-    except (TimeoutError, RuntimeError) as e:
-        return {"success": False, "message": str(e)}
+    script = f"""
+var _r;
+try {{
+    var destAcc = {safe_account} ? MailCore.getAccountByEmail({safe_account}) : Mail.accounts()[0];
+    var destMbox = MailCore.getMailbox(destAcc, {safe_folder});
+    var targetIds = {ids_js};
+    var moved = 0, notFound = [], failed = [];
 
-    output = result.stdout.strip()
-    parts = output.split("|||")
-    first = parts[0].strip()
+    for (var i = 0; i < targetIds.length; i++) {{
+        var tid = targetIds[i];
+        var msg = MailCore.findMessageAcrossAccounts(tid);
+        if (!msg) {{ notFound.push(tid); continue; }}
+        var result = MailCore.moveMessage(msg, destMbox);
+        if (result.method === "failed") {{
+            failed.push({{id: tid, error: result.error}});
+        }} else {{
+            moved++;
+        }}
+    }}
+    _r = {{moved: moved, not_found: notFound, failed: failed}};
+}} catch(e) {{
+    var code = e.message && e.message.indexOf("no account") >= 0 ? "DEST_ACCOUNT_NOT_FOUND" : "FOLDER_NOT_FOUND";
+    _r = {{error: code, detail: e.message}};
+}}
+JSON.stringify(_r);"""
 
-    if first == "DEST_ACCOUNT_NOT_FOUND":
-        return {"success": False, "message": f"no account found for email '{to_account}'"}
-    if first == "FOLDER_NOT_FOUND":
-        return {"success": False, "message": f"folder '{to_folder}' not found"}
+    def action() -> dict:
+        try:
+            result = run_jxa_with_core(script, timeout=max(120, count * 5))
+        except (TimeoutError, JXAError) as e:
+            return {"success": False, "message": str(e)}
 
-    moved_count = int(first) if first.isdigit() else 0
-    not_found = [x.strip() for x in parts[1].split(",") if x.strip()] if len(parts) > 1 and parts[1].strip() else []
+        if result.get("error") == "DEST_ACCOUNT_NOT_FOUND":
+            return {"success": False, "message": f"no account found for email '{to_account}'"}
+        if result.get("error") == "FOLDER_NOT_FOUND":
+            return {"success": False, "message": f"folder '{to_folder}' not found"}
 
-    if moved_count > 0:
-        sync_mail_state(delay_seconds=1.0)
+        moved_count = result.get("moved", 0)
+        not_found = [str(x) for x in result.get("not_found", [])]
+        failed = result.get("failed", [])
 
-    dest = f"{to_account}/{to_folder}" if to_account else to_folder
-    return {
-        "success": moved_count > 0,
-        "moved": moved_count,
-        "requested": count,
-        "not_found": not_found,
-        "message": f"moved {moved_count}/{count} emails to {dest}" + (f", {len(not_found)} not found" if not_found else ""),
-    }
+        if moved_count > 0:
+            sync_mail_state(delay_seconds=1.0, preserve_focus=True)
+
+        dest = f"{to_account}/{to_folder}" if to_account else to_folder
+        msg = f"moved {moved_count}/{count} emails to {dest}"
+        if not_found:
+            msg += f", {len(not_found)} not found"
+        if failed:
+            msg += f", {len(failed)} failed (MIME/encoding error)"
+
+        out = {
+            "success": moved_count > 0,
+            "moved": moved_count,
+            "requested": count,
+            "not_found": not_found,
+            "message": msg,
+        }
+        if failed:
+            out["failed"] = failed
+        return out
+
+    return run_guarded_local_mail_mutation("batch-move", action)

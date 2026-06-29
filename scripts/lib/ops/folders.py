@@ -77,16 +77,38 @@ JSON.stringify({{emails: results, total: totalCount}});
         from ..resolve import upsert_listing_hints
         upsert_listing_hints(results)
 
+    # coverage invariant (mirror of list-recent): never truncate silently. an
+    # explicit small --limit is an expected note; a shortfall at --limit 0 means we
+    # hit the 2000-per-mailbox batch ceiling and is a hard warnings[] entry.
+    fetched = pre_dedup_count
+    dropped = total - fetched
+    note = None
+    coverage_warnings = []
+    if dropped > 0:
+        if limit and limit > 0:
+            note = f"showing {len(results)} of {total} emails (limit={limit}). use --limit 0 to fetch all."
+        else:
+            coverage_warnings = [
+                f"INCOMPLETE COVERAGE: fetched {fetched} of {total} messages in '{folder_name}'; "
+                f"{dropped} dropped at the 2000-per-mailbox batch ceiling."
+            ]
+
     if include_content and results:
         enriched = enrich_with_content(results)
         if isinstance(enriched, dict):
             enriched["total"] = total
             enriched["showing"] = len(results)
+            if note:
+                enriched["note"] = note
+            if coverage_warnings:
+                enriched["coverage_warnings"] = coverage_warnings
         return enriched
 
     output = {"emails": results, "total": total, "showing": len(results)}
     if deduped_removed > 0:
         output["duplicates_removed"] = deduped_removed
-    if len(results) < total:
-        output["note"] = f"showing {len(results)} of {total} emails. use --limit 0 to fetch all."
+    if note:
+        output["note"] = note
+    if coverage_warnings:
+        output["coverage_warnings"] = coverage_warnings
     return output

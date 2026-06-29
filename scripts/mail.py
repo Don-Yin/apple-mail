@@ -5,6 +5,8 @@ All output is JSON to stdout. Exit 0 on success, 1 on error.
 Response contract: {success, data, error, warnings, meta}
 """
 
+from __future__ import annotations
+
 import argparse
 import fcntl
 import json
@@ -16,9 +18,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 _MAIL_LOCK_PATH = Path("/tmp/apple-mail-skill.lock")
 _MAX_OUTPUT_BYTES = 10 * 1024 * 1024
+_ALLOW_UI_MUTATION_ENV = "APPLE_MAIL_ALLOW_UI_MUTATION"
+_ALLOW_UI_MUTATION_COMMAND_ENV = "APPLE_MAIL_ALLOW_UI_MUTATION_COMMAND"
+_DRAFT_BACKEND_ENV = "APPLE_MAIL_DRAFT_BACKEND"
+_DEFAULT_DRAFT_BACKEND = "mailapp"
+_MAIL_UI_MUTATION_COMMANDS = {
+    "amend-draft",
+    "send-draft",
+    "reply-draft",
+    "forward-draft",
+    "delete-email",
+    "delete-draft",
+    "move-email",
+    "batch-move",
+}
 
 
 def _wrap(data=None, error=None, warnings=None, command="", start_time=None):
@@ -38,6 +54,73 @@ def _wrap(data=None, error=None, warnings=None, command="", start_time=None):
 
 def _error(code: str, message: str, details: dict = None):
     return {"code": code, "message": message, "details": details or {}}
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _compose_backend(args) -> str:
+    backend = getattr(args, "backend", None) or os.environ.get(_DRAFT_BACKEND_ENV, _DEFAULT_DRAFT_BACKEND)
+    return backend.strip().lower()
+
+
+def _requires_mail_ui_mutation(args) -> bool:
+    return args.command in _MAIL_UI_MUTATION_COMMANDS
+
+
+def _requires_mail_lock(args) -> bool:
+    return args.command != "server-info" and not (
+        args.command == "compose-draft" and _compose_backend(args) == "artifact"
+    )
+
+
+def _mutation_command_key(args) -> str:
+    return args.command
+
+
+def _mutation_commands_from_env() -> set[str]:
+    raw = os.environ.get(_ALLOW_UI_MUTATION_COMMAND_ENV, "")
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
+def _mail_ui_mutation_allowed(args) -> bool:
+    if getattr(args, "allow_live_mail_mutation", False):
+        return True
+    return (
+        _truthy_env(_ALLOW_UI_MUTATION_ENV)
+        and _mutation_command_key(args).lower() in _mutation_commands_from_env()
+    )
+
+
+def _authorize_live_mail_mutation_for_ops(args) -> None:
+    if getattr(args, "allow_live_mail_mutation", False):
+        os.environ[_ALLOW_UI_MUTATION_ENV] = "1"
+        os.environ[_ALLOW_UI_MUTATION_COMMAND_ENV] = _mutation_command_key(args)
+
+
+def _mutation_disabled_result(command: str, start_time):
+    return _wrap(
+        error=_error(
+            "MAIL_UI_MUTATION_DISABLED",
+            "live Apple Mail send/delete/move/amend/reply/forward operations are disabled by default because those paths "
+            "have crashed Mail during testing. Use compose-draft for hidden synced drafts, "
+            "compose-draft --backend artifact for a no-Mail draft artifact, "
+            "or pass --allow-live-mail-mutation for an explicit development-only one-command override.",
+            {
+                "command": command,
+                "override_flag": "--allow-live-mail-mutation",
+                "override_env": _ALLOW_UI_MUTATION_ENV,
+                "override_command_env": _ALLOW_UI_MUTATION_COMMAND_ENV,
+                "draft_backend_env": _DRAFT_BACKEND_ENV,
+                "default_compose_backend": _DEFAULT_DRAFT_BACKEND,
+                "artifact_compose_backend": "artifact",
+                "direct_call_override": f"{_ALLOW_UI_MUTATION_ENV}=1 {_ALLOW_UI_MUTATION_COMMAND_ENV}=<command>",
+            },
+        ),
+        command=command,
+        start_time=start_time,
+    )
 
 
 def _output(result: dict):
@@ -80,9 +163,19 @@ def _output_op(result: dict, command: str, t0):
     """
     if isinstance(result, dict) and result.get("success") is False:
         msg = result.get("message") or result.get("error") or "operation failed"
-        code = _infer_error_code(str(msg))
+        code = result.get("code") or _infer_error_code(str(msg))
+        # preserve diagnostic fields (e.g. delete's unknown_state / partial counts) so
+        # they survive the success=False path instead of being dropped from the error.
+        details = {
+            k: result[k]
+            for k in (
+                "unknown_state", "deleted", "requested", "not_found", "backend", "host", "port", "mailbox",
+                "local_mail_safety", "method", "moved", "failed",
+            )
+            if k in result
+        }
         _output(_wrap(
-            error=_error(code, str(msg)),
+            error=_error(code, str(msg), details),
             command=command,
             start_time=t0,
         ))
@@ -160,7 +253,10 @@ def cmd_server_info(args, t0):
             "name": "apple-mail-skill",
             "version": VERSION,
             "description": "cursor skill for apple mail on macos",
-            "total_commands": 20,
+            "default_draft_backend": _DEFAULT_DRAFT_BACKEND,
+            "draft_backend_env": _DRAFT_BACKEND_ENV,
+            "local_mail_mutation_safety_envelope": True,
+            "total_commands": len([name for name in COMMAND_MAP if not name.startswith("_")]),
         },
         command="server-info",
         start_time=t0,
@@ -172,6 +268,21 @@ def cmd_check_health(args, t0):
 
     result = health_check()
     _output_op(result, "check-health", t0)
+
+
+def cmd_local_mutation_preflight(args, t0):
+    from lib.diagnostics import newest_mail_crash_report
+    from lib.ops.mutation_guard import run_guarded_local_mail_mutation
+
+    def action():
+        return {
+            "success": True,
+            "message": "local Mail mutation safety envelope preflight passed without mutating mailbox state",
+            "newest_mail_crash_report": newest_mail_crash_report(),
+        }
+
+    result = run_guarded_local_mail_mutation("local-mutation-preflight", action)
+    _output_op(result, "local-mutation-preflight", t0)
 
 
 def cmd_list_accounts(args, t0):
@@ -198,7 +309,8 @@ def cmd_list_recent(args, t0):
         most_recent_n_emails=args.limit,
         include_content=args.include_content,
     )
-    _output(_wrap(data=result, command="list-recent", start_time=t0))
+    warnings = result.pop("coverage_warnings", []) if isinstance(result, dict) else []
+    _output(_wrap(data=result, warnings=warnings, command="list-recent", start_time=t0))
 
 
 def cmd_list_emails(args, t0):
@@ -213,14 +325,16 @@ def cmd_list_emails(args, t0):
     if isinstance(result, dict) and result.get("success") is False:
         _output_op(result, "list-emails", t0)
         return
-    _output(_wrap(data=result, command="list-emails", start_time=t0))
+    warnings = result.pop("coverage_warnings", []) if isinstance(result, dict) else []
+    _output(_wrap(data=result, warnings=warnings, command="list-emails", start_time=t0))
 
 
 def cmd_list_drafts(args, t0):
     from lib.ops.drafts import list_drafts
 
     result = list_drafts(limit=args.limit, include_content=args.include_content)
-    _output(_wrap(data=result, command="list-drafts", start_time=t0))
+    warnings = result.pop("coverage_warnings", []) if isinstance(result, dict) else []
+    _output(_wrap(data=result, warnings=warnings, command="list-drafts", start_time=t0))
 
 
 def cmd_read_email(args, t0):
@@ -279,17 +393,37 @@ def cmd_search(args, t0):
 
 
 def cmd_compose_draft(args, t0):
-    from lib.ops.drafts import compose_draft
+    backend = _compose_backend(args)
+    if backend == "artifact":
+        from lib.ops.draft_artifacts import create_draft_artifact
 
-    result = compose_draft(
-        account_email=args.account,
-        subject=args.subject,
-        body=args.body,
-        to=args.to,
-        cc=args.cc,
-        bcc=args.bcc,
-        attachments=args.attachments,
-    )
+        result = create_draft_artifact(
+            account_email=args.account,
+            subject=args.subject,
+            body=args.body,
+            to=args.to,
+            cc=args.cc,
+            bcc=args.bcc,
+            attachments=args.attachments,
+            output_dir=args.output_dir,
+        )
+    elif backend == "mailapp":
+        from lib.ops.drafts import compose_draft
+
+        result = compose_draft(
+            account_email=args.account,
+            subject=args.subject,
+            body=args.body,
+            to=args.to,
+            cc=args.cc,
+            bcc=args.bcc,
+            attachments=args.attachments,
+        )
+    else:
+        result = {
+            "success": False,
+            "message": f"unknown compose backend {backend!r}; use 'artifact' or 'mailapp'",
+        }
     _output_op(result, "compose-draft", t0)
 
 
@@ -354,6 +488,21 @@ def cmd_forward_draft(args, t0):
 def cmd_delete_email(args, t0):
     from lib.ops.delete import delete_email, delete_emails_batch
 
+    # destructive-safety gate: integer ids shift across syncs and are easy to collide
+    # with (small/sequential), which caused a real mis-delete. require the stable
+    # --message-ids, or an explicit --force-int-ids opt-in, before deleting by int id.
+    if getattr(args, "ids", None) and not getattr(args, "message_ids", None) and not getattr(args, "force_int_ids", False):
+        _output(_wrap(
+            error=_error(
+                "UNSAFE_INT_IDS",
+                "refusing to delete by integer --ids: they shift across Exchange syncs and are "
+                "easy to collide with. use --message-ids (the stable RFC ids from any list "
+                "command), or pass --force-int-ids to override.",
+            ),
+            command="delete-email", start_time=t0,
+        ))
+        return
+
     identifiers = _resolve_ids_or_message_ids(args, "delete-email", t0)
     if identifiers is None:
         return
@@ -392,324 +541,74 @@ def cmd_batch_move(args, t0):
     _output_op(result, "batch-move", t0)
 
 
+def cmd_fix_spotlight(args, t0):
+    """disable Spotlight indexing for ~/Library/Mail to prevent mds_stores CPU drain."""
+    mail_dir = Path.home() / "Library" / "Mail"
+    if not mail_dir.exists():
+        _output(_wrap(data={"status": "skipped", "reason": "~/Library/Mail not found"}, command="fix-spotlight", start_time=t0))
+        return
+
+    marker = mail_dir / ".metadata_never_index"
+    plist = Path("/System/Volumes/Data/.Spotlight-V100/VolumeConfiguration.plist")
+    actions = []
+
+    if not marker.exists():
+        try:
+            marker.touch()
+            actions.append("created .metadata_never_index marker")
+        except PermissionError:
+            actions.append("cannot create .metadata_never_index — grant Full Disk Access to Terminal, or run: touch ~/Library/Mail/.metadata_never_index")
+    else:
+        actions.append(".metadata_never_index marker already exists")
+
+    plist_excluded = False
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["/usr/libexec/PlistBuddy", "-c", "Print :Exclusions", str(plist)],
+            capture_output=True, text=True, timeout=5,
+        )
+        plist_excluded = str(mail_dir) in r.stdout
+    except Exception:
+        pass
+
+    if not plist_excluded:
+        try:
+            r = subprocess.run(
+                ["sudo", "-n", "/usr/libexec/PlistBuddy", "-c",
+                 f"Add :Exclusions:0 string {mail_dir}", str(plist)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                actions.append("added to Spotlight exclusions in VolumeConfiguration.plist")
+            else:
+                actions.append("plist update needs sudo — run manually: "
+                               f"sudo /usr/libexec/PlistBuddy -c 'Add :Exclusions:0 string {mail_dir}' {plist}")
+        except Exception:
+            actions.append(f"plist update needs sudo — run manually: "
+                           f"sudo /usr/libexec/PlistBuddy -c 'Add :Exclusions:0 string {mail_dir}' {plist}")
+    else:
+        actions.append("already in Spotlight exclusions plist")
+
+    _output(_wrap(data={"status": "done", "actions": actions}, command="fix-spotlight", start_time=t0))
+
+
 def cmd_build_index(args, t0):
     from lib.ops.search import build_search_index
 
+    warnings = []
+    mail_dir = Path.home() / "Library" / "Mail"
+    if mail_dir.exists() and not (mail_dir / ".metadata_never_index").exists():
+        warnings.append(
+            "spotlight indexing is enabled on ~/Library/Mail — this can cause mds_stores to consume 100%+ CPU. "
+            "run: mail.sh fix-spotlight"
+        )
+
     result = build_search_index()
-    _output_op(result, "build-index", t0)
-
-
-def cmd_index_status(args, t0):
-    from lib.search_index.schema import PROGRESS_PATH
-
-    if not PROGRESS_PATH.exists():
-        _output(_wrap(
-            data={"status": "not_running", "message": "no background indexing in progress"},
-            command="index-status",
-            start_time=t0,
-        ))
-        return
-
-    try:
-        progress = json.loads(PROGRESS_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        _output(_wrap(
-            error=_error("PROGRESS_CORRUPTED", "index-progress.json is corrupted or unreadable", {
-                "recovery": "delete the file and re-run build-index",
-                "path": str(PROGRESS_PATH),
-            }),
-            command="index-status",
-            start_time=t0,
-        ))
-        return
-
-    STALE_TIMEOUT = 60
-
-    status = progress.get("status", "unknown")
-    pid = progress.get("pid")
-
-    if status == "running" and pid:
-        pid_alive = False
-        try:
-            os.kill(pid, 0)
-            pid_alive = True
-        except (OSError, ProcessLookupError):
-            pass
-
-        if not pid_alive:
-            heartbeat = progress.get("last_heartbeat", "")
-            progress["status"] = "stale"
-            progress["stale_reason"] = f"pid {pid} is dead, last heartbeat: {heartbeat}"
-            status = "stale"
-        elif pid_alive:
-            hb = progress.get("last_heartbeat", "")
-            if hb:
-                try:
-                    hb_dt = datetime.fromisoformat(hb)
-                    elapsed = (datetime.now() - hb_dt).total_seconds()
-                    if elapsed > STALE_TIMEOUT:
-                        progress["status"] = "stale"
-                        progress["stale_reason"] = f"heartbeat timeout ({elapsed:.0f}s > {STALE_TIMEOUT}s), pid {pid} may be hung"
-                        status = "stale"
-                except (ValueError, TypeError):
-                    pass
-
-    total = progress.get("total", 0)
-    completed = progress.get("completed", 0)
-    pct = round(completed / total * 100, 1) if total else 0
-
-    data = {
-        "status": status,
-        "total": total,
-        "completed": completed,
-        "failed": progress.get("failed", 0),
-        "percentage": pct,
-        "started": progress.get("started"),
-        "last_heartbeat": progress.get("last_heartbeat"),
-        "pid": pid,
-    }
-
-    if status == "stale":
-        data["stale_reason"] = progress.get("stale_reason", "")
-
-    _output(_wrap(data=data, command="index-status", start_time=t0))
-
-
-def cmd_index_cancel(args, t0):
-    import signal
-    from lib.search_index.schema import PROGRESS_PATH, LOCK_PATH
-
-    if not PROGRESS_PATH.exists():
-        _output(_wrap(
-            data={"status": "not_running", "message": "no background indexing to cancel"},
-            command="index-cancel",
-            start_time=t0,
-        ))
-        return
-
-    try:
-        progress = json.loads(PROGRESS_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        _output(_wrap(
-            error=_error("PROGRESS_CORRUPTED", "index-progress.json is corrupted"),
-            command="index-cancel",
-            start_time=t0,
-        ))
-        return
-
-    pid = progress.get("pid")
-    if not pid:
-        progress["status"] = "cancelled"
-        PROGRESS_PATH.write_text(json.dumps(progress, indent=2))
-        _output(_wrap(
-            data={"status": "cancelled", "message": "no PID found, marked as cancelled"},
-            command="index-cancel",
-            start_time=t0,
-        ))
-        return
-
-    killed = False
-    try:
-        os.kill(pid, signal.SIGTERM)
-        time.sleep(1)
-        try:
-            os.kill(pid, 0)
-            os.kill(pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
-        killed = True
-    except (OSError, ProcessLookupError):
-        killed = True
-
-    progress["status"] = "cancelled"
-    progress["last_updated"] = datetime.now().isoformat()
-    PROGRESS_PATH.write_text(json.dumps(progress, indent=2))
-
-    try:
-        if LOCK_PATH.exists():
-            LOCK_PATH.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    _output(_wrap(
-        data={"status": "cancelled", "pid": pid, "killed": killed},
-        command="index-cancel",
-        start_time=t0,
-    ))
-
-
-def cmd_index_reset(args, t0):
-    """clear stale index progress and lock files."""
-    from lib.search_index.schema import PROGRESS_PATH, LOCK_PATH
-    for p in [PROGRESS_PATH, LOCK_PATH]:
-        Path(p).unlink(missing_ok=True)
-    _output(_wrap(data={"success": True, "message": "index status reset"}, command="index-reset", start_time=t0))
-
-
-def cmd_background_index(args, t0):
-    """Hidden command: fetch content for specific IDs via JXA and cache them.
-
-    Lock-protected, heartbeat-emitting, batched-commit background worker.
-    Idempotent: rechecks remaining_ids against DB before processing.
-    """
-    import fcntl
-    from lib.jxa import run_jxa_with_core, _atomic_write_json, _is_pid_alive
-    from lib.search_index import SearchIndexManager
-    from lib.search_index.schema import PROGRESS_PATH, LOCK_PATH
-
-    HEARTBEAT_INTERVAL = 10
-    BATCH_COMMIT_SIZE = 10
-    MAX_RETRIES = 3
-
-    msg_ids = [int(i) for i in args.ids]
-    pid = os.getpid()
-
-    PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    lock_fd = None
-    try:
-        lock_fd = os.open(str(LOCK_PATH), os.O_RDWR | os.O_CREAT)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (OSError, BlockingIOError):
-            if PROGRESS_PATH.exists():
-                try:
-                    existing = json.loads(PROGRESS_PATH.read_text())
-                    existing_pid = existing.get("pid")
-                    if existing_pid and not _is_pid_alive(existing_pid):
-                        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-                    else:
-                        os.close(lock_fd)
-                        _output(_wrap(
-                            data={"status": "already_running", "pid": existing_pid},
-                            command="_background-index",
-                            start_time=t0,
-                        ))
-                        return
-                except Exception:
-                    os.close(lock_fd)
-                    return
-            else:
-                os.close(lock_fd)
-                return
-
-        progress = {
-            "status": "running",
-            "started": datetime.now().isoformat(),
-            "pid": pid,
-            "total": len(msg_ids),
-            "completed": 0,
-            "failed": 0,
-            "remaining_ids": msg_ids,
-            "attempted_ids": [],
-            "queue_version": 1,
-            "last_heartbeat": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat(),
-        }
-        _atomic_write_json(PROGRESS_PATH, progress)
-
-        mgr = SearchIndexManager()
-        try:
-            already_cached = mgr.batch_content(msg_ids)
-            msg_ids = [mid for mid in msg_ids if mid not in already_cached]
-            progress["remaining_ids"] = msg_ids
-            progress["completed"] = progress["total"] - len(msg_ids)
-            _atomic_write_json(PROGRESS_PATH, progress)
-
-            last_heartbeat = time.monotonic()
-            uncommitted = 0
-
-            while progress["remaining_ids"]:
-                current_progress = None
-                try:
-                    current_progress = json.loads(PROGRESS_PATH.read_text())
-                except Exception:
-                    pass
-
-                if current_progress:
-                    if current_progress.get("status") == "cancelled":
-                        break
-                    merged_remaining = set(current_progress.get("remaining_ids", []))
-                    progress["remaining_ids"] = sorted(merged_remaining)
-                    progress["total"] = len(progress["attempted_ids"]) + len(progress["remaining_ids"])
-
-                if not progress["remaining_ids"]:
-                    break
-
-                mid = progress["remaining_ids"][0]
-                success = False
-
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        script = f"""
-var msg = MailCore.findMessageAcrossAccounts({mid});
-if (msg) {{
-    var content = "";
-    try {{ content = msg.content() || ""; }} catch(e) {{}}
-    JSON.stringify({{id: {mid}, content: content}});
-}} else {{
-    JSON.stringify({{id: {mid}, content: ""}});
-}}"""
-                        result = run_jxa_with_core(script, timeout=15)
-                        if result and result.get("content"):
-                            mgr.cache_content(
-                                message_id=mid,
-                                subject="",
-                                sender="",
-                                content=result["content"][:1_000_000],
-                                date_received="",
-                            )
-                            uncommitted += 1
-                        success = True
-                        break
-                    except Exception:
-                        if attempt < MAX_RETRIES - 1:
-                            delay = min(30, (2 ** attempt) + (time.monotonic() % 1))
-                            time.sleep(delay)
-
-                progress["attempted_ids"].append(mid)
-                progress["remaining_ids"] = [i for i in progress["remaining_ids"] if i != mid]
-                if success:
-                    progress["completed"] += 1
-                else:
-                    progress["failed"] += 1
-
-                now = time.monotonic()
-                if now - last_heartbeat >= HEARTBEAT_INTERVAL or not progress["remaining_ids"]:
-                    progress["last_heartbeat"] = datetime.now().isoformat()
-                    progress["last_updated"] = datetime.now().isoformat()
-                    _atomic_write_json(PROGRESS_PATH, progress)
-                    last_heartbeat = now
-
-            final_status = "done" if progress["failed"] == 0 else "failed"
-            if progress.get("status") == "cancelled" or (
-                current_progress and current_progress.get("status") == "cancelled"
-            ):
-                final_status = "cancelled"
-
-            progress["status"] = final_status
-            progress["last_updated"] = datetime.now().isoformat()
-            progress["last_heartbeat"] = datetime.now().isoformat()
-            _atomic_write_json(PROGRESS_PATH, progress)
-
-        except Exception as e:
-            progress["status"] = "failed"
-            progress["error"] = str(e)
-            progress["last_updated"] = datetime.now().isoformat()
-            _atomic_write_json(PROGRESS_PATH, progress)
-        finally:
-            mgr.close()
-
-        _output(_wrap(data=progress, command="_background-index", start_time=t0))
-
-    finally:
-        if lock_fd is not None:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
-            except Exception:
-                pass
+    if isinstance(result, dict) and result.get("success") is False:
+        _output(_wrap(error=_error("BUILD_FAILED", result.get("error") or result.get("message") or "index build failed (no detail returned)"), warnings=warnings, command="build-index", start_time=t0))
+    else:
+        _output(_wrap(data=result, warnings=warnings, command="build-index", start_time=t0))
 
 
 # ------------------------------------------------------------------
@@ -733,11 +632,24 @@ def build_parser():
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = parser.add_subparsers(dest="command", help="available commands")
 
+    def add_live_mutation_override(p):
+        p.add_argument(
+            "--allow-live-mail-mutation",
+            action="store_true",
+            help="development-only: allow this command to mutate live Mail.app state",
+        )
+
     # server-info
     sub.add_parser("server-info", help="show server/skill info")
 
     # check-health
     sub.add_parser("check-health", help="verify Mail.app is responding")
+
+    # local-mutation-preflight
+    sub.add_parser(
+        "local-mutation-preflight",
+        help="non-destructive preflight for local Mail mutation safety checks",
+    )
 
     # list-accounts
     sub.add_parser("list-accounts", help="list all mail accounts")
@@ -784,6 +696,9 @@ def build_parser():
     p.add_argument("--cc", nargs="+", help="CC addresses")
     p.add_argument("--bcc", nargs="+", help="BCC addresses")
     p.add_argument("--attachments", nargs="+", help="file paths to attach")
+    p.add_argument("--backend", choices=["artifact", "mailapp"], default=None, help="draft backend: mailapp hidden synced draft (default) or artifact no-Mail file output")
+    p.add_argument("--output-dir", default=None, help="artifact backend output directory (default: ~/Documents/apple-mail-draft-artifacts)")
+    add_live_mutation_override(p)
 
     # amend-draft
     p = sub.add_parser("amend-draft", help="amend an existing draft")
@@ -793,10 +708,12 @@ def build_parser():
     p.add_argument("--cc", nargs="+", help="new CC list (replaces existing)")
     p.add_argument("--bcc", nargs="+", help="new BCC list (replaces existing)")
     p.add_argument("--attachments", nargs="+", help="additional attachment paths")
+    add_live_mutation_override(p)
 
     # send-draft
     p = sub.add_parser("send-draft", help="send a draft by ID")
     p.add_argument("--id", required=True, help="draft ID")
+    add_live_mutation_override(p)
 
     # reply-draft
     p = sub.add_parser("reply-draft", help="create a reply draft")
@@ -807,6 +724,7 @@ def build_parser():
     p.add_argument("--cc", nargs="+", help="additional CC addresses")
     p.add_argument("--bcc", nargs="+", help="additional BCC addresses")
     p.add_argument("--attachments", nargs="+", help="file paths to attach")
+    add_live_mutation_override(p)
 
     # forward-draft
     p = sub.add_parser("forward-draft", help="create a forward draft")
@@ -818,15 +736,19 @@ def build_parser():
     p.add_argument("--cc", nargs="+", help="CC addresses")
     p.add_argument("--bcc", nargs="+", help="BCC addresses")
     p.add_argument("--attachments", nargs="+", help="file paths to attach")
+    add_live_mutation_override(p)
 
     # delete-email (single and batch)
     p = sub.add_parser("delete-email", help="delete email(s) by ID")
-    p.add_argument("--ids", nargs="+", default=None, help="email integer ID(s) to delete")
-    p.add_argument("--message-ids", nargs="+", default=None, help="RFC 2822 message-id(s) to delete (preferred)")
+    p.add_argument("--ids", nargs="+", default=None, help="email integer ID(s) to delete (unsafe; ids shift/collide -- prefer --message-ids)")
+    p.add_argument("--message-ids", nargs="+", default=None, help="RFC 2822 message-id(s) to delete (preferred, stable)")
+    p.add_argument("--force-int-ids", action="store_true", help="allow deletion by integer --ids despite the collision risk")
+    add_live_mutation_override(p)
 
     # delete-draft
     p = sub.add_parser("delete-draft", help="delete a draft by ID")
     p.add_argument("--id", required=True, help="draft ID")
+    add_live_mutation_override(p)
 
     # move-email
     p = sub.add_parser("move-email", help="move an email to a folder")
@@ -834,6 +756,7 @@ def build_parser():
     p.add_argument("--message-id", default=None, help="RFC 2822 message-id (preferred)")
     p.add_argument("--to", required=True, help="destination folder name")
     p.add_argument("--to-account", default=None, help="destination account email (for cross-account moves)")
+    add_live_mutation_override(p)
 
     # batch-move
     p = sub.add_parser("batch-move", help="batch-move emails to a folder")
@@ -841,22 +764,13 @@ def build_parser():
     p.add_argument("--message-ids", nargs="+", default=None, help="RFC 2822 message-id(s) (preferred)")
     p.add_argument("--to", required=True, help="destination folder name")
     p.add_argument("--to-account", default=None, help="destination account email (cross-account)")
+    add_live_mutation_override(p)
+
+    # fix-spotlight
+    sub.add_parser("fix-spotlight", help="disable Spotlight indexing for ~/Library/Mail (prevents mds_stores CPU drain)")
 
     # build-index
     sub.add_parser("build-index", help="build/rebuild FTS5 search index from disk")
-
-    # index-status
-    sub.add_parser("index-status", help="check background indexing progress")
-
-    # index-cancel
-    sub.add_parser("index-cancel", help="cancel background indexing")
-
-    # index-reset
-    sub.add_parser("index-reset", help="clear stale index progress/lock files")
-
-    # _background-index (hidden)
-    p = sub.add_parser("_background-index")
-    p.add_argument("--ids", nargs="+", required=True, help=argparse.SUPPRESS)
 
     return parser
 
@@ -864,6 +778,7 @@ def build_parser():
 COMMAND_MAP = {
     "server-info": cmd_server_info,
     "check-health": cmd_check_health,
+    "local-mutation-preflight": cmd_local_mutation_preflight,
     "list-accounts": cmd_list_accounts,
     "list-folders": cmd_list_folders,
     "list-recent": cmd_list_recent,
@@ -880,11 +795,8 @@ COMMAND_MAP = {
     "delete-draft": cmd_delete_draft,
     "move-email": cmd_move_email,
     "batch-move": cmd_batch_move,
+    "fix-spotlight": cmd_fix_spotlight,
     "build-index": cmd_build_index,
-    "index-status": cmd_index_status,
-    "index-cancel": cmd_index_cancel,
-    "index-reset": cmd_index_reset,
-    "_background-index": cmd_background_index,
 }
 
 
@@ -900,7 +812,12 @@ def main():
     handler = COMMAND_MAP.get(args.command)
 
     if handler:
-        skip_lock = args.command == "_background-index"
+        if _requires_mail_ui_mutation(args):
+            if not _mail_ui_mutation_allowed(args):
+                _output(_mutation_disabled_result(_mutation_command_key(args), t0))
+                return
+            _authorize_live_mail_mutation_for_ops(args)
+        skip_lock = not _requires_mail_lock(args)
         lock_fd = None
         if not skip_lock:
             lock_fd = os.open(str(_MAIL_LOCK_PATH), os.O_RDWR | os.O_CREAT)

@@ -72,8 +72,8 @@ def parse_emlx(path: Path) -> dict | None:
         mime_bytes = raw[nl + 1 : nl + 1 + byte_count]
         msg = email.message_from_bytes(mime_bytes)
 
-        subject = _decode_header(msg["Subject"])
-        sender = _decode_header(msg["From"])
+        subject = decode_rfc2047_header(msg["Subject"])
+        sender = decode_rfc2047_header(msg["From"])
 
         date_received = ""
         if msg["Date"]:
@@ -141,7 +141,7 @@ def infer_account_mailbox(emlx_path: Path, mail_dir: Path) -> tuple[str, str]:
         return ("Unknown", "Unknown")
 
 
-def _decode_header(value: str | None) -> str:
+def decode_rfc2047_header(value: str | None) -> str:
     if not value:
         return ""
     try:

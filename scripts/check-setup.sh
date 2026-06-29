@@ -80,7 +80,31 @@ else
     echo "   WARN — no index found. Run: $MAIL_SH build-index" >&2
 fi
 
-# 6. Show resolved paths
+# 6. Spotlight indexing (mds_stores CPU drain prevention)
+echo "6. Spotlight exclusion..." >&2
+MAIL_LIB_DIR="$HOME/Library/Mail"
+if [ -d "$MAIL_LIB_DIR" ]; then
+    spotlight_ok=false
+    # check .metadata_never_index marker
+    if [ -f "$MAIL_LIB_DIR/.metadata_never_index" ]; then
+        spotlight_ok=true
+    fi
+    # check VolumeConfiguration.plist exclusions (authoritative)
+    if /usr/libexec/PlistBuddy -c 'Print :Exclusions' /System/Volumes/Data/.Spotlight-V100/VolumeConfiguration.plist 2>/dev/null | grep -q "$MAIL_LIB_DIR"; then
+        spotlight_ok=true
+    fi
+    if $spotlight_ok; then
+        echo "   OK — ~/Library/Mail is excluded from Spotlight" >&2
+    else
+        echo "   WARN — ~/Library/Mail is NOT excluded from Spotlight." >&2
+        echo "   This can cause mds_stores to consume 100%+ CPU indefinitely." >&2
+        echo "   Fix: $MAIL_SH fix-spotlight" >&2
+    fi
+else
+    echo "   SKIP — ~/Library/Mail not found" >&2
+fi
+
+# 7. Show resolved paths
 echo "" >&2
 echo "=== Resolved Paths ===" >&2
 echo "  Skill root:  $SKILL_ROOT" >&2

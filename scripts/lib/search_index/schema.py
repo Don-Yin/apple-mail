@@ -1,5 +1,7 @@
 """SQLite schema for the FTS5 email search index."""
 
+from __future__ import annotations
+
 import os
 import re
 import sqlite3
@@ -10,9 +12,6 @@ from .. import ASSETS_DIR
 SCHEMA_VERSION = 4
 
 DB_PATH = ASSETS_DIR / "index.db"
-PROGRESS_PATH = ASSETS_DIR / "index-progress.json"
-LOCK_PATH = ASSETS_DIR / "index-progress.lock"
-LOGS_DIR = ASSETS_DIR / "logs"
 
 FTS5_SPECIAL_CHARS = re.compile(r'(["\'\-\*\(\)\:\^])')
 

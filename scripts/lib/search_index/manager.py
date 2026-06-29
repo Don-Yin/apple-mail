@@ -296,12 +296,17 @@ class SearchIndexManager:
                 continue
 
             date_prefix = date[:16] if len(date) >= 16 else date
-            row = conn.execute(
+            candidates = conn.execute(
                 "SELECT rowid, message_id, content FROM emails "
-                "WHERE subject = ? AND date_received LIKE ? || '%' AND message_id != ? "
-                "LIMIT 1",
+                "WHERE subject = ? AND date_received LIKE ? || '%' AND message_id != ?",
                 (subject, date_prefix, mid),
-            ).fetchone()
+            ).fetchall()
+            # ambiguity guard: only self-heal when the (subject, minute) key is UNIQUE.
+            # near-identical emails (same subject+minute, e.g. duplicate sign-in alerts)
+            # must never cross-heal content to the wrong row.
+            if len(candidates) != 1:
+                continue
+            row = candidates[0]
 
             if row and row[2]:
                 result[mid] = row[2]
@@ -387,18 +392,19 @@ class SearchIndexManager:
         conn = self._get_conn()
 
         date_prefix = date_received[:16] if len(date_received) >= 16 else date_received
-        existing = conn.execute(
-            "SELECT rowid, message_id FROM emails "
-            "WHERE subject = ? AND date_received LIKE ? || '%' AND message_id != ? "
-            "LIMIT 1",
+        matches = conn.execute(
+            "SELECT rowid FROM emails "
+            "WHERE subject = ? AND date_received LIKE ? || '%' AND message_id != ?",
             (subject, date_prefix, message_id),
-        ).fetchone()
+        ).fetchall()
 
-        if existing:
+        # only collapse onto an existing row when the (subject, minute) key is UNIQUE;
+        # otherwise insert a distinct row so near-identical emails never overwrite each other.
+        if len(matches) == 1:
             conn.execute(
                 "UPDATE emails SET message_id = ?, content = ?, sender = ?, rfc_message_id = COALESCE(?, rfc_message_id), "
                 "indexed_at = datetime('now') WHERE rowid = ?",
-                (message_id, content, sender, rfc_message_id, existing[0]),
+                (message_id, content, sender, rfc_message_id, matches[0][0]),
             )
         else:
             conn.execute(
