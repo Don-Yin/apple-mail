@@ -245,7 +245,7 @@ Live Mail.app forward draft. Disabled by default with `MAIL_UI_MUTATION_DISABLED
 | `--force-int-ids` | no | opt-in required to delete by raw `--ids` |
 | `--allow-live-mail-mutation` | no | Development-only override |
 
-Live Mail.app deletion. Disabled by default with `MAIL_UI_MUTATION_DISABLED`. Do not use in production; use provider/API deletion instead. If enabled for development, provide `--message-ids` where possible. Raw `--ids` is additionally refused with `UNSAFE_INT_IDS` unless `--force-int-ids` is passed.
+Enabled production deletion implemented as a recoverable same-account move to Trash/Deleted Items inside the Mail safety envelope. Provide `--message-ids` wherever possible. Raw `--ids` is refused with `UNSAFE_INT_IDS` unless `--force-int-ids` is passed.
 
 ## delete-draft
 
