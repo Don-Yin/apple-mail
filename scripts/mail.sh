@@ -6,6 +6,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_ROOT="$(dirname "$SCRIPT_DIR")"
 ASSETS_DIR="$SKILL_ROOT/assets"
 REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
+LOCAL_ENV_FILE="${APPLE_MAIL_ENV_FILE:-$HOME/.config/apple-mail/env}"
+
+# Optional user-owned local preferences. Keep account-specific adapter paths and
+# defaults outside the public repository.
+if [ -f "$LOCAL_ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$LOCAL_ENV_FILE"
+    set +a
+fi
 DEPS_HASH_FILE="$ASSETS_DIR/.deps.hash"
 ENV_NAME="mcp"
 PYTHON_VERSION="3.11"

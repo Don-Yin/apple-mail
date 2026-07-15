@@ -31,7 +31,11 @@ git clone https://github.com/Don-Yin/apple-mail.git .openclaw/skills/apple-mail
 - 读不到时自动回退到 JXA
 - 自带 SQLite FTS5 全文索引，搜索很快
 - 用户确认删除后，邮件会安全移入对应账户的废纸篓，而不是调用容易导致 Mail 崩溃的删除命令
+- 可选的 Exchange 服务器草稿使用显式 protocol-v1 adapter，默认关闭
+- 经服务器回读验证的 Exchange 草稿可通过 `--font arial` 或 `APPLE_MAIL_DRAFT_FONT=arial` 请求 Arial 11pt
 - 不确认就不发，所有发送必须用户点头
+
+公开仓库不附带 Exchange 认证 adapter。stdin JSON 协议和配置变量见 `references/tool-reference.md`。
 
 完整命令文档见 `SKILL.md` 和 `references/tool-reference.md`。
 

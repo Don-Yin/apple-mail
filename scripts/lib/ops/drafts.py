@@ -1,6 +1,8 @@
 """Draft operations: compose, amend, send, reply, list."""
 
+import json
 import textwrap
+import time
 from ..applescript import (
     validate_id,
     escape_applescript,
@@ -17,6 +19,164 @@ from .mutation_guard import require_live_mail_mutation, run_guarded_local_mail_m
 # ------------------------------------------------------------------
 # Compose
 # ------------------------------------------------------------------
+
+
+_DRAFT_VERIFY_TIMEOUT_SECONDS = 12.0
+_DRAFT_VERIFY_POLL_SECONDS = 0.75
+
+
+def _norm_addr(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _norm_addr_list(values: list[str] | None) -> list[str]:
+    return sorted(_norm_addr(v) for v in (values or []) if _norm_addr(v))
+
+
+def _same_recipients(actual: dict, to: list[str], cc: list[str], bcc: list[str]) -> bool:
+    return (
+        _norm_addr_list(actual.get("to_recipients")) == _norm_addr_list(to)
+        and _norm_addr_list(actual.get("cc_recipients")) == _norm_addr_list(cc)
+        and _norm_addr_list(actual.get("bcc_recipients")) == _norm_addr_list(bcc)
+    )
+
+
+def _draft_rows_for_account(account_email: str, subject: str | None = None) -> list[dict]:
+    """Return live Drafts messages for an account; never consult the search index."""
+    safe_account = json.dumps(account_email)
+    safe_subject = json.dumps(subject)
+    script = f"""
+var targetAccount = {safe_account};
+var targetSubject = {safe_subject};
+var rows = [];
+var acct = MailCore.getAccountByEmail(targetAccount);
+var accEmails = acct.emailAddresses();
+var accEmail = accEmails.length > 0 ? accEmails[0] : acct.name();
+var mboxes = acct.mailboxes();
+var names = acct.mailboxes.name();
+
+for (var m = 0; m < mboxes.length; m++) {{
+    var folderName = names[m];
+    if (folderName.toLowerCase().indexOf("draft") === -1) continue;
+    var msgs = mboxes[m].messages();
+    for (var i = 0; i < msgs.length; i++) {{
+        var msg = msgs[i];
+        var msgSubject = "";
+        try {{ msgSubject = msg.subject() || ""; }} catch(e) {{}}
+        if (targetSubject !== null && msgSubject !== targetSubject) continue;
+
+        function recipientAddresses(kind) {{
+            var out = [];
+            try {{
+                var recips = kind();
+                for (var r = 0; r < recips.length; r++) {{
+                    try {{ out.push(recips[r].address() || ""); }} catch(e) {{}}
+                }}
+            }} catch(e) {{}}
+            return out;
+        }}
+
+        rows.push({{
+            id: String(msg.id()),
+            message_id: msg.messageId() || "",
+            subject: msgSubject,
+            sender: msg.sender() || "",
+            date_received: MailCore.formatDate(msg.dateReceived()) || "",
+            account_email: accEmail,
+            folder_name: folderName,
+            to_recipients: recipientAddresses(function() {{ return msg.toRecipients(); }}),
+            cc_recipients: recipientAddresses(function() {{ return msg.ccRecipients(); }}),
+            bcc_recipients: recipientAddresses(function() {{ return msg.bccRecipients(); }})
+        }});
+    }}
+}}
+JSON.stringify(rows);
+"""
+    try:
+        rows = run_jxa_with_core(script, timeout=30)
+    except (JXAError, TimeoutError):
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def _matching_hidden_outgoing(account_email: str, subject: str, to: list[str], cc: list[str], bcc: list[str]) -> list[dict]:
+    """Return matching hidden outgoing compose objects for diagnostics only."""
+    safe_subject = json.dumps(subject)
+    script = f"""
+var targetSubject = {safe_subject};
+var rows = [];
+var msgs = Mail.outgoingMessages();
+for (var i = 0; i < msgs.length; i++) {{
+    var msg = msgs[i];
+    var msgSubject = "";
+    try {{ msgSubject = msg.subject() || ""; }} catch(e) {{}}
+    if (msgSubject !== targetSubject) continue;
+
+    function recipientAddresses(kind) {{
+        var out = [];
+        try {{
+            var recips = kind();
+            for (var r = 0; r < recips.length; r++) {{
+                try {{ out.push(recips[r].address() || ""); }} catch(e) {{}}
+            }}
+        }} catch(e) {{}}
+        return out;
+    }}
+
+    rows.push({{
+        id: String(msg.id()),
+        subject: msgSubject,
+        sender: msg.sender() || "",
+        visible: !!msg.visible(),
+        to_recipients: recipientAddresses(function() {{ return msg.toRecipients(); }}),
+        cc_recipients: recipientAddresses(function() {{ return msg.ccRecipients(); }}),
+        bcc_recipients: recipientAddresses(function() {{ return msg.bccRecipients(); }})
+    }});
+}}
+JSON.stringify(rows);
+"""
+    try:
+        rows = run_jxa_with_core(script, timeout=15)
+    except (JXAError, TimeoutError):
+        return []
+
+    matches = []
+    for row in (rows if isinstance(rows, list) else []):
+        if _norm_addr(row.get("sender")) != _norm_addr(account_email):
+            continue
+        if _same_recipients(row, to, cc, bcc):
+            matches.append(row)
+    return matches
+
+
+def _verify_new_durable_draft(
+    *,
+    account_email: str,
+    subject: str,
+    to: list[str],
+    cc: list[str],
+    bcc: list[str],
+    before_ids: set[str],
+    timeout_seconds: float = _DRAFT_VERIFY_TIMEOUT_SECONDS,
+    poll_seconds: float = _DRAFT_VERIFY_POLL_SECONDS,
+) -> dict | None:
+    """Poll live account Drafts for a new matching message."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        for row in _draft_rows_for_account(account_email, subject):
+            if row.get("id") in before_ids:
+                continue
+            if _norm_addr(row.get("account_email")) != _norm_addr(account_email):
+                continue
+            if row.get("subject") != subject:
+                continue
+            if _same_recipients(row, to, cc, bcc):
+                row["verified"] = True
+                return row
+
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_seconds)
 
 
 def _build_recipient_commit_guard(recipients: list[str], recipient_type: str, target: str = "newMessage") -> str:
@@ -76,6 +236,7 @@ def compose_draft(
         + _build_recipient_commit_guard(bcc, "bcc", "newMessage")
     )
     attachment_section = build_attachments(attachment_paths, "newMessage")
+    before_ids = {row.get("id") for row in _draft_rows_for_account(account_email, subject)}
 
     script = textwrap.dedent(
         f"""
@@ -128,12 +289,50 @@ def compose_draft(
             return {"success": False, "message": f"account {account_email} not found"}
         elif output == "SUCCESS":
             sync_mail_state(preserve_focus=True)
+            verified = _verify_new_durable_draft(
+                account_email=account_email,
+                subject=subject,
+                to=to,
+                cc=cc,
+                bcc=bcc,
+                before_ids=before_ids,
+            )
+            if not verified:
+                hidden = _matching_hidden_outgoing(account_email, subject, to, cc, bcc)
+                return {
+                    "success": False,
+                    "code": "DRAFT_NOT_DURABLE",
+                    "message": (
+                        "Mail.app accepted the hidden compose object, but no new verified "
+                        "message appeared in the requested account's Drafts mailbox."
+                    ),
+                    "backend": "mailapp",
+                    "mail_app_written": True,
+                    "visible": False,
+                    "verification": {
+                        "account_email": account_email,
+                        "folder": "Drafts",
+                        "matched_live_draft": False,
+                        "before_draft_ids": sorted(before_ids),
+                        "timeout_seconds": _DRAFT_VERIFY_TIMEOUT_SECONDS,
+                    },
+                    "hidden_outgoing": {
+                        "count": len(hidden),
+                        "messages": hidden,
+                    },
+                }
             return {
                 "success": True,
-                "message": "hidden Mail draft created successfully - query drafts after a delay to get stable id",
+                "message": "Mail draft created and verified in the account Drafts mailbox",
                 "backend": "mailapp",
                 "mail_app_written": True,
                 "visible": False,
+                "verified": True,
+                "draft_id": verified.get("id", ""),
+                "message_id": verified.get("message_id", ""),
+                "account_email": verified.get("account_email", account_email),
+                "folder_name": verified.get("folder_name", "Drafts"),
+                "draft": verified,
             }
         else:
             return {"success": False, "message": f"unexpected output: {output}"}
