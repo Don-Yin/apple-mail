@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -124,6 +125,47 @@ class LocalMutationSafetyTests(unittest.TestCase):
                 offenders.append(str(path.relative_to(ROOT)))
 
         self.assertEqual(offenders, [])
+
+
+class DeleteEmailDefaultEnabledTests(unittest.TestCase):
+    """delete-email is enabled by default as a safe move-to-Trash (proven by live canary)."""
+
+    def _clear_override_env(self):
+        return patch.dict(
+            os.environ,
+            {"APPLE_MAIL_ALLOW_UI_MUTATION": "", "APPLE_MAIL_ALLOW_UI_MUTATION_COMMAND": ""},
+            clear=False,
+        )
+
+    def test_delete_email_allowed_by_default(self):
+        with self._clear_override_env():
+            self.assertIsNone(mutation_guard.require_live_mail_mutation("delete-email"))
+
+    def test_other_mutations_still_gated_by_default(self):
+        with self._clear_override_env():
+            for op in ("send-draft", "move-email", "batch-move", "delete-draft"):
+                guard = mutation_guard.require_live_mail_mutation(op)
+                self.assertIsInstance(guard, dict, op)
+                self.assertEqual(guard.get("code"), "MAIL_UI_MUTATION_DISABLED", op)
+
+    def test_delete_uses_move_to_trash_not_delete_verb(self):
+        from lib.ops import delete
+
+        single = delete._build_delete_to_trash_script("123")
+        batch = delete._build_batch_delete_to_trash_script(["1", "2"])
+        for script in (single, batch):
+            self.assertIn("trashMailboxFor", script)
+            self.assertIn("moveMessage", script)
+            # must NOT invoke the crash-prone AppleScript `delete` verb
+            self.assertNotRegex(script, r"\bdelete\s+\w")
+
+    def test_cli_allows_delete_email_without_override(self):
+        import mail
+
+        self.assertIn("delete-email", mail._DEFAULT_ALLOWED_MUTATION_COMMANDS)
+        args = Mock(command="delete-email", allow_live_mail_mutation=False)
+        with self._clear_override_env():
+            self.assertTrue(mail._mail_ui_mutation_allowed(args))
 
 
 if __name__ == "__main__":

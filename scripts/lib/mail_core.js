@@ -44,6 +44,26 @@ const MailCore = {
         throw new Error("mailbox not found: " + name);
     },
 
+    trashMailboxFor(account) {
+        // resolve the account's Trash / Deleted Items mailbox by name. "delete" is a
+        // same-account move into this mailbox (property assignment, see moveMessage),
+        // which syncs to the server and avoids the crash-prone AppleScript `delete` verb.
+        // covers Exchange "Deleted Items", Gmail "Trash", and localized names like
+        // Outlook's "已删除邮件".
+        const KNOWN = ["deleted items", "trash", "deleted messages", "bin", "已删除邮件", "deleted"];
+        const mboxes = account.mailboxes();
+        const names = account.mailboxes.name();
+        for (let i = 0; i < names.length; i++) {
+            if (KNOWN.indexOf(names[i].toLowerCase()) >= 0) return mboxes[i];
+        }
+        // fallback: any mailbox whose name clearly denotes trash/deleted
+        for (let i = 0; i < names.length; i++) {
+            const n = names[i].toLowerCase();
+            if (n.indexOf("deleted") >= 0 || n.indexOf("trash") >= 0 || n.indexOf("已删除") >= 0) return mboxes[i];
+        }
+        throw new Error("trash mailbox not found for account: " + account.name());
+    },
+
     batchFetch(msgs, props, limit) {
         const MAX_BATCH = 2000;
         const cap = (limit && limit > 0) ? Math.min(limit, MAX_BATCH) : MAX_BATCH;

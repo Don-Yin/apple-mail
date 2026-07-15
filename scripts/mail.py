@@ -36,6 +36,14 @@ _MAIL_UI_MUTATION_COMMANDS = {
     "batch-move",
 }
 
+# Mutations permitted by DEFAULT (no override flag/env needed). delete-email deletes by
+# MOVING the message into its own account's Trash -- a same-account move proven by live
+# canary to sync server-side AND never crash Mail (unlike the AppleScript `delete` verb).
+# It still runs inside the safety envelope (pre/post health, focus restore, crash-delta).
+_DEFAULT_ALLOWED_MUTATION_COMMANDS = {
+    "delete-email",
+}
+
 
 def _wrap(data=None, error=None, warnings=None, command="", start_time=None):
     execution_time_ms = round((time.monotonic() - start_time) * 1000, 1) if start_time else 0
@@ -85,6 +93,8 @@ def _mutation_commands_from_env() -> set[str]:
 
 
 def _mail_ui_mutation_allowed(args) -> bool:
+    if _mutation_command_key(args).lower() in _DEFAULT_ALLOWED_MUTATION_COMMANDS:
+        return True
     if getattr(args, "allow_live_mail_mutation", False):
         return True
     return (

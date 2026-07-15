@@ -44,7 +44,17 @@ def live_mail_mutation_disabled(operation: str) -> dict:
     }
 
 
+# operations safe enough to run by DEFAULT (still wrapped in the safety envelope below).
+# delete-email deletes by MOVING the message into its own account's Trash/Deleted Items --
+# a same-account move (property assignment, not the AppleScript `delete` verb). A live canary
+# proved this (a) syncs server-side on Exchange and (b) never triggered the Mail crash the
+# `delete` verb did, across 30/30 moves. Everything else stays disabled-by-default.
+DEFAULT_ALLOWED_OPERATIONS = {"delete-email"}
+
+
 def require_live_mail_mutation(operation: str) -> dict | None:
+    if operation.lower() in DEFAULT_ALLOWED_OPERATIONS:
+        return None
     if live_mail_mutation_allowed(operation):
         return None
     return live_mail_mutation_disabled(operation)
