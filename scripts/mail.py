@@ -18,13 +18,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 _MAIL_LOCK_PATH = Path("/tmp/apple-mail-skill.lock")
 _MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 _ALLOW_UI_MUTATION_ENV = "APPLE_MAIL_ALLOW_UI_MUTATION"
 _ALLOW_UI_MUTATION_COMMAND_ENV = "APPLE_MAIL_ALLOW_UI_MUTATION_COMMAND"
 _DRAFT_BACKEND_ENV = "APPLE_MAIL_DRAFT_BACKEND"
-_DEFAULT_DRAFT_BACKEND = "mailapp"
+_DRAFT_FONT_ENV = "APPLE_MAIL_DRAFT_FONT"
+_DEFAULT_DRAFT_BACKEND = "auto"
+_DEFAULT_DRAFT_FONT = "provider-default"
 _MAIL_UI_MUTATION_COMMANDS = {
     "amend-draft",
     "send-draft",
@@ -70,7 +72,15 @@ def _truthy_env(name: str) -> bool:
 
 def _compose_backend(args) -> str:
     backend = getattr(args, "backend", None) or os.environ.get(_DRAFT_BACKEND_ENV, _DEFAULT_DRAFT_BACKEND)
-    return backend.strip().lower()
+    backend = backend.strip().lower()
+    if backend != "auto":
+        return backend
+    account = getattr(args, "account", None)
+    if account:
+        from lib.ops.exchange_rest import account_uses_exchange_rest
+        if account_uses_exchange_rest(account):
+            return "exchange-rest"
+    return "mailapp"
 
 
 def _requires_mail_ui_mutation(args) -> bool:
@@ -78,8 +88,10 @@ def _requires_mail_ui_mutation(args) -> bool:
 
 
 def _requires_mail_lock(args) -> bool:
+    if args.command in {"server-info", "exchange-auth-status", "exchange-auth-login"}:
+        return False
     return args.command != "server-info" and not (
-        args.command == "compose-draft" and _compose_backend(args) == "artifact"
+        args.command == "compose-draft" and _compose_backend(args) in {"artifact", "exchange-rest"}
     )
 
 
@@ -114,7 +126,7 @@ def _mutation_disabled_result(command: str, start_time):
         error=_error(
             "MAIL_UI_MUTATION_DISABLED",
             "live Apple Mail send/delete/move/amend/reply/forward operations are disabled by default because those paths "
-            "have crashed Mail during testing. Use compose-draft for hidden synced drafts, "
+            "have crashed Mail during testing. Use compose-draft for auto-routed verified drafts, "
             "compose-draft --backend artifact for a no-Mail draft artifact, "
             "or pass --allow-live-mail-mutation for an explicit development-only one-command override.",
             {
@@ -125,6 +137,7 @@ def _mutation_disabled_result(command: str, start_time):
                 "draft_backend_env": _DRAFT_BACKEND_ENV,
                 "default_compose_backend": _DEFAULT_DRAFT_BACKEND,
                 "artifact_compose_backend": "artifact",
+                "exchange_rest_compose_backend": "exchange-rest",
                 "direct_call_override": f"{_ALLOW_UI_MUTATION_ENV}=1 {_ALLOW_UI_MUTATION_COMMAND_ENV}=<command>",
             },
         ),
@@ -180,7 +193,10 @@ def _output_op(result: dict, command: str, t0):
             k: result[k]
             for k in (
                 "unknown_state", "deleted", "requested", "not_found", "backend", "host", "port", "mailbox",
-                "local_mail_safety", "method", "moved", "failed",
+                "local_mail_safety", "method", "moved", "failed", "verification", "hidden_outgoing",
+                "server_written", "dry_run", "message_id", "eml_path", "manifest_path", "target",
+                "exchange_id", "verified", "draft", "web_exchange", "supported_accounts",
+                "reason", "focus_safe", "recommended_command", "account_email", "auth", "status",
             )
             if k in result
         }
@@ -258,6 +274,8 @@ def _resolve_ids_or_message_ids(args, command: str, t0) -> list[str] | None:
 
 
 def cmd_server_info(args, t0):
+    from lib.ops.exchange_rest import exchange_adapter_metadata
+
     _output(_wrap(
         data={
             "name": "apple-mail-skill",
@@ -265,6 +283,9 @@ def cmd_server_info(args, t0):
             "description": "cursor skill for apple mail on macos",
             "default_draft_backend": _DEFAULT_DRAFT_BACKEND,
             "draft_backend_env": _DRAFT_BACKEND_ENV,
+            "default_draft_font": os.environ.get(_DRAFT_FONT_ENV, _DEFAULT_DRAFT_FONT),
+            "draft_font_env": _DRAFT_FONT_ENV,
+            "exchange_adapter": exchange_adapter_metadata(),
             "local_mail_mutation_safety_envelope": True,
             "total_commands": len([name for name in COMMAND_MAP if not name.startswith("_")]),
         },
@@ -402,8 +423,44 @@ def cmd_search(args, t0):
         _output(_wrap(data=result, warnings=warnings, command="search", start_time=t0))
 
 
+def cmd_exchange_auth_status(args, t0):
+    from lib.ops.exchange_rest import exchange_auth_status
+
+    result = exchange_auth_status(account_email=args.account)
+    _output_op(result, "exchange-auth-status", t0)
+
+
+def cmd_exchange_auth_login(args, t0):
+    from lib.ops.exchange_rest import exchange_auth_login
+
+    result = exchange_auth_login(account_email=args.account)
+    _output_op(result, "exchange-auth-login", t0)
+
+
 def cmd_compose_draft(args, t0):
     backend = _compose_backend(args)
+    explicit_font = args.font
+    requested_font = (
+        explicit_font or os.environ.get(_DRAFT_FONT_ENV, _DEFAULT_DRAFT_FONT)
+        if backend == "exchange-rest"
+        else _DEFAULT_DRAFT_FONT
+    )
+    if explicit_font not in {None, "arial", "provider-default"} or requested_font not in {"arial", "provider-default"}:
+        _output_op({
+            "success": False,
+            "code": "UNSUPPORTED_DRAFT_FONT",
+            "message": f"unsupported draft font: {explicit_font or requested_font}",
+        }, "compose-draft", t0)
+        return
+    if explicit_font is not None and backend != "exchange-rest":
+        _output_op({
+            "success": False,
+            "code": "DRAFT_FONT_BACKEND_UNSUPPORTED",
+            "message": "font selection is supported only by the configured exchange-rest adapter backend",
+            "backend": backend,
+        }, "compose-draft", t0)
+        return
+
     if backend == "artifact":
         from lib.ops.draft_artifacts import create_draft_artifact
 
@@ -416,6 +473,19 @@ def cmd_compose_draft(args, t0):
             bcc=args.bcc,
             attachments=args.attachments,
             output_dir=args.output_dir,
+        )
+    elif backend == "exchange-rest":
+        from lib.ops.exchange_rest import compose_exchange_rest_draft
+
+        result = compose_exchange_rest_draft(
+            account_email=args.account,
+            subject=args.subject,
+            body=args.body,
+            to=args.to,
+            cc=args.cc,
+            bcc=args.bcc,
+            attachments=args.attachments,
+            font=requested_font,
         )
     elif backend == "mailapp":
         from lib.ops.drafts import compose_draft
@@ -432,7 +502,7 @@ def cmd_compose_draft(args, t0):
     else:
         result = {
             "success": False,
-            "message": f"unknown compose backend {backend!r}; use 'artifact' or 'mailapp'",
+            "message": f"unknown compose backend {backend!r}; use 'auto', 'artifact', 'exchange-rest', or 'mailapp'",
         }
     _output_op(result, "compose-draft", t0)
 
@@ -697,6 +767,14 @@ def build_parser():
     p.add_argument("--account", help="limit to specific account")
     p.add_argument("--limit", type=int, default=64, help="max results (default: 64)")
 
+    # exchange-auth-status
+    p = sub.add_parser("exchange-auth-status", help="check whether Exchange background auth is ready without focusing Chrome")
+    p.add_argument("--account", required=True, help="Exchange account email")
+
+    # exchange-auth-login
+    p = sub.add_parser("exchange-auth-login", help="explicitly open/focus Outlook Web auth for Exchange drafting")
+    p.add_argument("--account", required=True, help="Exchange account email")
+
     # compose-draft
     p = sub.add_parser("compose-draft", help="create a new draft email")
     p.add_argument("--account", required=True, help="sending account email")
@@ -706,7 +784,8 @@ def build_parser():
     p.add_argument("--cc", nargs="+", help="CC addresses")
     p.add_argument("--bcc", nargs="+", help="BCC addresses")
     p.add_argument("--attachments", nargs="+", help="file paths to attach")
-    p.add_argument("--backend", choices=["artifact", "mailapp"], default=None, help="draft backend: mailapp hidden synced draft (default) or artifact no-Mail file output")
+    p.add_argument("--font", choices=["arial", "provider-default"], default=None, help="Exchange adapter draft font (default: APPLE_MAIL_DRAFT_FONT or provider-default)")
+    p.add_argument("--backend", choices=["auto", "artifact", "exchange-rest", "mailapp"], default=None, help="draft backend: auto uses exchange-rest only for explicitly configured adapter accounts, otherwise mailapp")
     p.add_argument("--output-dir", default=None, help="artifact backend output directory (default: ~/Documents/apple-mail-draft-artifacts)")
     add_live_mutation_override(p)
 
@@ -796,6 +875,8 @@ COMMAND_MAP = {
     "list-drafts": cmd_list_drafts,
     "read-email": cmd_read_email,
     "search": cmd_search,
+    "exchange-auth-status": cmd_exchange_auth_status,
+    "exchange-auth-login": cmd_exchange_auth_login,
     "compose-draft": cmd_compose_draft,
     "amend-draft": cmd_amend_draft,
     "send-draft": cmd_send_draft,

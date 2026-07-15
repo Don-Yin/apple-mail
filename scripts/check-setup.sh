@@ -6,6 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIL_SH="$SCRIPT_DIR/mail.sh"
 SKILL_ROOT="$(dirname "$SCRIPT_DIR")"
 ASSETS_DIR="$SKILL_ROOT/assets"
+LOCAL_ENV_FILE="${APPLE_MAIL_ENV_FILE:-$HOME/.config/apple-mail/env}"
+if [ -f "$LOCAL_ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$LOCAL_ENV_FILE"
+    set +a
+fi
 
 echo "=== Apple Mail Skill Setup Check ===" >&2
 echo "" >&2
@@ -104,7 +111,19 @@ else
     echo "   SKIP — ~/Library/Mail not found" >&2
 fi
 
-# 7. Show resolved paths
+# 7. Optional Exchange adapter
+echo "7. Optional Exchange adapter..." >&2
+if [ -z "${APPLE_MAIL_WEB_EXCHANGE_CLI:-}" ]; then
+    echo "   SKIP — not configured; auto drafting will use Mail.app" >&2
+elif [ ! -f "$APPLE_MAIL_WEB_EXCHANGE_CLI" ] || [ ! -x "$APPLE_MAIL_WEB_EXCHANGE_CLI" ]; then
+    echo "   WARN — APPLE_MAIL_WEB_EXCHANGE_CLI is not an executable file" >&2
+elif [ -z "${APPLE_MAIL_EXCHANGE_REST_ACCOUNTS:-}" ]; then
+    echo "   WARN — adapter executable is configured but APPLE_MAIL_EXCHANGE_REST_ACCOUNTS is empty" >&2
+else
+    echo "   OK — protocol-v1 adapter executable and account allowlist are configured" >&2
+fi
+
+# 8. Show resolved paths
 echo "" >&2
 echo "=== Resolved Paths ===" >&2
 echo "  Skill root:  $SKILL_ROOT" >&2
