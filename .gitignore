@@ -13,6 +13,9 @@ assets/.deps.hash
 assets/deletion-log.jsonl
 assets/index*.db
 assets/index*.db-*
+assets/**/index*.db
+assets/**/index*.db-*
+assets/corrupt-index-backup-*/
 scripts/lib/search_index/*.db
 
 # Keep the assets directory itself

@@ -12,13 +12,13 @@ an agent skill that gives AI assistants full control over macOS Mail.app. triage
 
 ```bash
 # cursor
-git clone https://github.com/openclaw/apple-mail.git .cursor/skills/apple-mail
+git clone https://github.com/Don-Yin/apple-mail.git .cursor/skills/apple-mail
 
 # claude code
-git clone https://github.com/openclaw/apple-mail.git .claude/skills/apple-mail
+git clone https://github.com/Don-Yin/apple-mail.git .claude/skills/apple-mail
 
 # openclaw
-git clone https://github.com/openclaw/apple-mail.git .openclaw/skills/apple-mail
+git clone https://github.com/Don-Yin/apple-mail.git .openclaw/skills/apple-mail
 ```
 
 requires macOS with Mail.app configured, [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html), and full disk access for Terminal. on first run, `mail.sh` bootstraps a Python 3.11 environment automatically.
@@ -28,7 +28,7 @@ requires macOS with Mail.app configured, [micromamba](https://mamba.readthedocs.
 - reads `.emlx` files directly from disk (~5 ms per message vs seconds via scripting bridge)
 - falls back to JXA when disk access misses
 - maintains a SQLite FTS5 index for fast full-text search
-- all destructive operations log their actions and support `--dry-run`
+- confirmed deletion moves mail to the account's Trash/Deleted Items instead of using Mail's crash-prone delete verb
 - nothing sends without explicit user confirmation
 
 full command reference in `SKILL.md` and `references/tool-reference.md`.
