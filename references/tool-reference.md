@@ -12,7 +12,7 @@ All output is JSON with the response contract: `{success, data, error, warnings,
 No parameters. Returns skill version and metadata.
 
 ```json
-{"name": "apple-mail-skill", "version": "1.1.0", "default_draft_backend": "mailapp", "local_mail_mutation_safety_envelope": true}
+{"name": "apple-mail-skill", "version": "1.2.0", "default_draft_backend": "auto", "default_draft_font": "provider-default", "exchange_adapter": {"protocol_version": 1, "configured": false}, "local_mail_mutation_safety_envelope": true}
 ```
 
 ## check-health
@@ -161,6 +161,58 @@ After successful fetch, content is automatically cached in the search index (cac
 
 Returns list of result dicts with `id`, `subject`, `sender`, `date_received`, `snippet`, `score`.
 
+## exchange-auth-status
+
+| Param | Required | Description |
+|---|---|---|
+| `--account EMAIL` | yes | Exchange account email |
+
+Non-mutating readiness probe for an explicitly configured Exchange adapter account. The public skill ships no adapter or authentication implementation. The adapter receives a versioned JSON request over stdin and must return the authenticated `account_email` in its JSON response.
+
+## exchange-auth-login
+
+| Param | Required | Description |
+|---|---|---|
+| `--account EMAIL` | yes | Exchange account email |
+
+Requests interactive authentication from the configured external adapter. Whether this opens a browser or uses another mechanism is adapter-defined. Use it only after `exchange-auth-status` or `compose-draft` returns `EXCHANGE_AUTH_REQUIRED`.
+
+### Exchange adapter protocol v1
+
+Apple Mail launches the configured executable with no draft data in command-line arguments and writes one JSON request to stdin:
+
+```json
+{
+  "protocol_version": 1,
+  "operation": "compose-draft",
+  "account": "exchange-user@example.com",
+  "auth_mode": "background",
+  "payload": {
+    "subject": "Subject",
+    "body": "Body or verified HTML",
+    "to": ["recipient@example.com"],
+    "cc": [],
+    "bcc": [],
+    "attachments": []
+  }
+}
+```
+
+Supported operations are `status`, `login`, `compose-draft`, and `read-email`. The adapter returns exactly one JSON object on stdout:
+
+```json
+{
+  "protocol_version": 1,
+  "success": true,
+  "data": {
+    "account_email": "exchange-user@example.com",
+    "id": "SERVER_DRAFT_ID"
+  }
+}
+```
+
+Every successful response must contain the authenticated `account_email`. Apple Mail rejects protocol or account mismatches. `compose-draft` is followed by `read-email`; the adapter must return draft state, subject, content, recipients, message ID, and account for verification. Apple Mail ships no adapter and does not endorse a particular browser, token, Graph, EWS, or enterprise authentication implementation.
+
 ## compose-draft
 
 | Param | Required | Description |
@@ -172,11 +224,16 @@ Returns list of result dicts with `id`, `subject`, `sender`, `date_received`, `s
 | `--cc ADDR...` | no | CC recipient(s) |
 | `--bcc ADDR...` | no | BCC recipient(s) |
 | `--attachments PATH...` | no | File paths to attach |
-| `--backend artifact\|mailapp` | no | `mailapp` is the production default: hidden synced Apple Mail draft. `artifact` writes a no-Mail `.eml` + manifest |
+| `--backend auto\|artifact\|exchange-rest\|mailapp` | no | `auto` uses `exchange-rest` only when both an adapter executable and the account allowlist are configured; otherwise it uses `mailapp` |
+| `--font arial\|provider-default` | no | Exchange adapter font request; defaults to `APPLE_MAIL_DRAFT_FONT` or `provider-default` |
 | `--output-dir DIR` | no | Artifact backend output directory; default `~/Documents/apple-mail-draft-artifacts` |
 | `--allow-live-mail-mutation` | no | Ignored for default compose; reserved for development-only mutation commands |
 
-Default production behavior creates a hidden Apple Mail outgoing message with `visible:false`, saves it to drafts, restores the previous foreground app, and lets the configured Mail account sync it to Outlook/Exchange if that account normally syncs drafts. Returns fields including `backend: "mailapp"`, `mail_app_written: true`, and `visible: false`. Verify with `list-drafts` after a short delay; do not use delete cleanup through Mail.app scripting.
+Exchange is disabled by default. Set `APPLE_MAIL_WEB_EXCHANGE_CLI` to an executable protocol-v1 adapter and list routed accounts in `APPLE_MAIL_EXCHANGE_REST_ACCOUNTS`. Requests are one JSON object over stdin; private draft content is never placed in process arguments. Successful adapter responses must identify the authenticated account, and Apple Mail reads the new draft back before reporting success.
+
+For local preferences without modifying the public repository, create `~/.config/apple-mail/env` with shell assignments such as `APPLE_MAIL_WEB_EXCHANGE_CLI=...`, `APPLE_MAIL_EXCHANGE_REST_ACCOUNTS=exchange-user@example.com`, and optionally `APPLE_MAIL_DRAFT_FONT=arial`. `scripts/mail.sh` and `scripts/check-setup.sh` load this user-owned file automatically. Keep it mode `0600` when it contains account-specific paths or settings.
+
+For unconfigured accounts, `mailapp` creates a hidden Apple Mail outgoing message with `visible:false`, saves it to drafts, restores the previous foreground app, and verifies a durable Drafts message. If no durable message appears, it returns `DRAFT_NOT_DURABLE`.
 
 `--backend artifact` writes an RFC 5322 `.eml` plus a JSON manifest and does not open or modify Mail.app. Returns fields including `backend`, `eml_path`, `manifest_path`, `message_id`, and `mail_app_written: false`. Verify with filesystem checks, not `list-drafts`.
 

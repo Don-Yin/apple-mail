@@ -1,6 +1,6 @@
 ---
 name: apple-mail
-description: read, search, and safely draft emails from macos mail data. production draft creation uses hidden Apple Mail save for sync; visible compose and destructive Mail writes are disabled.
+description: read, search, safely draft, and recoverably delete emails from macos Mail data. optional server draft adapters are explicit and disabled by default.
 disable-model-invocation: true
 ---
 # apple mail skill
@@ -28,9 +28,9 @@ this skill lives under `.cursor/skills/apple-mail/` which may be a symlink. all 
 
 production must not drive visible Apple Mail compose windows, draft deletion, sending, forwarding, replies, or arbitrary moves. those paths have crashed Mail during testing, including crashes in Mail's scripting delete handlers. `delete-email` is the one production exception: after user confirmation, it moves the message to its own account's Trash/Deleted Items and remains recoverable.
 
-`compose-draft` uses the hidden Apple Mail backend by default so drafts sync through the user's already-configured Mail account. it creates a Mail outgoing message with `visible:false`, saves it to drafts, and restores the previous foreground app after the operation. the response includes `backend: "mailapp"`, `mail_app_written: true`, and `visible: false`.
+`compose-draft` uses the `auto` backend. by default, `auto` uses the verified hidden Mail.app path: it creates a message with `visible:false`, saves it, restores the previous foreground app, and succeeds only when a matching durable Drafts item is found.
 
-Outlook/Exchange sync is not local-only: Apple Mail writes a local Mail draft and Mail/Exchange performs the server sync. for a pure local no-Mail file, use `compose-draft --backend artifact` or set `APPLE_MAIL_DRAFT_BACKEND=artifact`; that writes an RFC 5322 `.eml` file plus a JSON manifest to `~/Documents/apple-mail-draft-artifacts` (or `--output-dir`) and returns `mail_app_written: false`.
+Exchange server drafting is an optional external adapter contract, not a bundled authentication implementation. Set `APPLE_MAIL_WEB_EXCHANGE_CLI` to an executable protocol-v1 adapter and list routed accounts in `APPLE_MAIL_EXCHANGE_REST_ACCOUNTS`. Put account-specific values in `~/.config/apple-mail/env`, which the launcher loads automatically and which must stay outside Git. Private draft data is sent as JSON over stdin, and successful responses must identify the authenticated account. When either setting is absent, `auto` continues to Mail.app. For a pure local file, use `compose-draft --backend artifact`.
 
 `delete-email` is enabled by default and implemented as a same-account move to Trash inside the safety envelope. the following other live Mail mutation commands remain disabled by default: `amend-draft`, `send-draft`, `reply-draft`, `forward-draft`, `delete-draft`, `move-email`, and `batch-move`. they return `MAIL_UI_MUTATION_DISABLED` unless `--allow-live-mail-mutation` is passed for that exact command. this override is development-only and should only be used on a disposable mailbox until the local mutation E2E suite passes repeatedly for that operation. direct developer calls must set both `APPLE_MAIL_ALLOW_UI_MUTATION=1` and `APPLE_MAIL_ALLOW_UI_MUTATION_COMMAND=<exact command>`.
 
@@ -62,7 +62,9 @@ all output is json with this contract:
 | `list-drafts [--limit N] [--include-content]`                               | drafts across all accounts                  | ~0.25 s   |
 | `read-email --message-id MID` or `--id ID`                                  | metadata plus cached/disk content           | ~1-2 s    |
 | `search --query TEXT [--scope all\|subject\|sender] [--limit N]`            | search emails                               | ~1 ms     |
-| `compose-draft --account EMAIL --subject TEXT --body TEXT --to ADDR... [--attachments PATH...]` | create hidden synced Mail draft without opening a compose window | ~1 s      |
+| `compose-draft --account EMAIL --subject TEXT --body TEXT --to ADDR... [--font arial\|provider-default] [--attachments PATH...]` | auto-route to an explicitly configured Exchange adapter or verified Mail.app Drafts | ~1-15 s |
+| `exchange-auth-status --account EMAIL` | query configured Exchange adapter readiness without Mail.app | network |
+| `exchange-auth-login --account EMAIL` | request interactive auth from the configured Exchange adapter | network |
 | `compose-draft --backend artifact --account EMAIL --subject TEXT --body TEXT --to ADDR... [--attachments PATH...] [--output-dir DIR]` | create non-ui RFC 5322 `.eml` draft artifact | instant   |
 | `amend-draft --id ID [--subject TEXT] [--body TEXT] [--attachments PATH...]`                        | dev-only Mail.app draft mutation; disabled by default | ~2 s      |
 | `send-draft --id ID`                                                        | dev-only Mail.app send; disabled by default  | ~2 s      |
@@ -102,10 +104,11 @@ for detailed parameter docs and return shapes, see `references/tool-reference.md
 ### compose and send
 
 1. `compose-draft --account me@example.com --subject "Hello" --body "..." --to recipient@example.com`
-2. confirm the response has `backend: "mailapp"`, `mail_app_written: true`, and `visible: false`
-3. verify with `list-drafts --limit 10` after a short delay so Apple Mail/Exchange has time to surface the draft
-4. for revisions, create a new draft. do not use live `amend-draft` or `send-draft` in production.
-5. if Mail becomes unstable, switch only the draft backend with `APPLE_MAIL_DRAFT_BACKEND=artifact` or `compose-draft --backend artifact`
+2. for Mail.app, require `verified: true` and a stable Drafts item; for an Exchange adapter, require `server_written: true`, `verified: true`, `exchange_id`, and `message_id`
+3. if an adapter returns `EXCHANGE_AUTH_REQUIRED`, run `exchange-auth-login --account me@example.com` explicitly and retry once
+4. for revisions, create a new draft. do not use live `amend-draft` or `send-draft` in production
+5. to prefer Arial locally without changing public defaults, set `APPLE_MAIL_DRAFT_FONT=arial`; non-Exchange backends reject unverifiable font requests
+6. if Mail becomes unstable, use `APPLE_MAIL_DRAFT_BACKEND=artifact` or `compose-draft --backend artifact`
 
 ### bulk triage
 
@@ -124,7 +127,7 @@ important: never use `search --scope all` as the source of truth for bulk operat
 2. always draft first -- never send without creating and confirming a draft
 3. never delete without confirmation -- after confirmation, use `delete-email` with stable message IDs whenever possible; deletion is recoverable from Trash/Deleted Items
 4. prefer `--message-id` over `--id` -- the RFC 2822 message-id (the `message_id` field from list commands) is stable across exchange syncs; integer ids can shift
-5. verify draft outputs -- for default `compose-draft`, verify the hidden Mail draft with `list-drafts`; for `--backend artifact`, verify the returned `.eml` and `.json` paths exist and the manifest says `mail_app_written: false`
+5. verify draft outputs -- Mail.app must return `verified: true` and a durable Drafts item; Exchange adapters must return `server_written: true`, `verified: true`, `exchange_id`, and `message_id`; artifact paths must exist and report `mail_app_written: false`
 6. content previews are partial -- previews are the first ~5000 chars, not full content. use `read-email` for cached/disk content and expect `content_source: "unavailable"` when safe sources have no body
 7. exchange sync delay -- move operations on exchange accounts need ~3 s for server sync when the development override is explicitly enabled
 8. draft previews -- `--include-content` may not work for drafts on exchange accounts. use `read-email` for full draft content
@@ -134,9 +137,10 @@ important: never use `search --scope all` as the source of truth for bulk operat
 
 prove every safe write took effect before yielding. if a verification fails, surface it to the user before chaining another action -- do not silently retry.
 
-1. after production `compose-draft` -- confirm the response has `backend: "mailapp"`, `mail_app_written: true`, and `visible: false`; after a short delay, verify with `list-drafts --limit 10` or `read-email` if a stable draft id is available.
-2. after `compose-draft --backend artifact` -- inspect the response paths; confirm the `.eml` and `.json` files exist, the `.eml` starts with an RFC 5322 header such as `From:`, and the manifest has `mail_app_written: false`.
-3. after `delete-email`, confirm the response reports a move to Trash/Deleted Items and re-list the source folder when verification matters. use development-only checks only for the other live mutation commands.
+1. after Mail.app `compose-draft`, require `verified: true`, `draft_id`, `message_id`, and `folder_name: "Drafts"`.
+2. after Exchange adapter `compose-draft`, require `server_written: true`, `verified: true`, `exchange_id`, `message_id`, and the requested font result.
+3. after `compose-draft --backend artifact`, verify the returned `.eml` and `.json` paths and `mail_app_written: false`.
+4. after `delete-email`, confirm the response reports a move to Trash/Deleted Items and re-list the source folder when verification matters.
 
 if verification is ambiguous (exchange sync taking longer than expected, partial bulk delete with mixed success/failure, unsure whether the user wanted draft-only or send-now), ask the user with a bounded question rather than guessing.
 

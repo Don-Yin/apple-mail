@@ -29,7 +29,11 @@ requires macOS with Mail.app configured, [micromamba](https://mamba.readthedocs.
 - falls back to JXA when disk access misses
 - maintains a SQLite FTS5 index for fast full-text search
 - confirmed deletion moves mail to the account's Trash/Deleted Items instead of using Mail's crash-prone delete verb
+- optional Exchange server drafting uses an explicit protocol-v1 adapter and is disabled by default
+- verified Exchange drafts can request Arial 11pt with `--font arial` or `APPLE_MAIL_DRAFT_FONT=arial`
 - nothing sends without explicit user confirmation
+
+The public repository ships no Exchange authentication adapter. See `references/tool-reference.md` for the stdin JSON contract and configuration variables.
 
 full command reference in `SKILL.md` and `references/tool-reference.md`.
 
